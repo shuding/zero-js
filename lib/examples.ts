@@ -23,20 +23,20 @@ int centis = floor(t * 100) % 100;
 
 // Seven-segment digit at x. Ghost segments first, then the lit ones.
 int digit(float x, int d) {
-  rect(x + 6, 20, 28, 6, "#172013");
-  rect(x + 34, 26, 6, 30, "#172013");
-  rect(x + 34, 62, 6, 30, "#172013");
-  rect(x + 6, 92, 28, 6, "#172013");
-  rect(x, 62, 6, 30, "#172013");
-  rect(x, 26, 6, 30, "#172013");
-  rect(x + 6, 56, 28, 6, "#172013");
-  if (d != 1 && d != 4) { rect(x + 6, 20, 28, 6, "#9fe870"); }
-  if (d != 5 && d != 6) { rect(x + 34, 26, 6, 30, "#9fe870"); }
-  if (d != 2) { rect(x + 34, 62, 6, 30, "#9fe870"); }
-  if (d != 1 && d != 4 && d != 7) { rect(x + 6, 92, 28, 6, "#9fe870"); }
-  if (d == 0 || d == 2 || d == 6 || d == 8) { rect(x, 62, 6, 30, "#9fe870"); }
-  if (d != 1 && d != 2 && d != 3 && d != 7) { rect(x, 26, 6, 30, "#9fe870"); }
-  if (d > 1 && d != 7) { rect(x + 6, 56, 28, 6, "#9fe870"); }
+  rect(x + 6, 20, 28, 6, "#eeeeee");
+  rect(x + 34, 26, 6, 30, "#eeeeee");
+  rect(x + 34, 62, 6, 30, "#eeeeee");
+  rect(x + 6, 92, 28, 6, "#eeeeee");
+  rect(x, 62, 6, 30, "#eeeeee");
+  rect(x, 26, 6, 30, "#eeeeee");
+  rect(x + 6, 56, 28, 6, "#eeeeee");
+  if (d != 1 && d != 4) { rect(x + 6, 20, 28, 6, "#0066ff"); }
+  if (d != 5 && d != 6) { rect(x + 34, 26, 6, 30, "#0066ff"); }
+  if (d != 2) { rect(x + 34, 62, 6, 30, "#0066ff"); }
+  if (d != 1 && d != 4 && d != 7) { rect(x + 6, 92, 28, 6, "#0066ff"); }
+  if (d == 0 || d == 2 || d == 6 || d == 8) { rect(x, 62, 6, 30, "#0066ff"); }
+  if (d != 1 && d != 2 && d != 3 && d != 7) { rect(x, 26, 6, 30, "#0066ff"); }
+  if (d > 1 && d != 7) { rect(x + 6, 56, 28, 6, "#0066ff"); }
   return d;
 }
 
@@ -50,10 +50,10 @@ digit(288, centis % 10);
 
 // The colon blinks twice a second.
 if (floor(t * 2) % 2 == 0) {
-  rect(113, 40, 6, 6, "#9fe870");
-  rect(113, 72, 6, 6, "#9fe870");
+  rect(113, 40, 6, 6, "#0066ff");
+  rect(113, 72, 6, 6, "#0066ff");
 }
-rect(226, 88, 5, 6, "#9fe870");
+rect(226, 88, 5, 6, "#0066ff");
 
 print(minutes);
 print(seconds);
@@ -242,7 +242,7 @@ print(state);
   {
     id: "geometry",
     name: "Geometry",
-    source: `float angle = input("angle", 35, 90, -90);
+    source: `float angle = input("angle", 35, 180, -180);
 float length = input("length", 90, 110);
 
 // Trigonometric functions use radians.
@@ -251,12 +251,14 @@ float x = 160 + cos(radians) * length;
 float y = 120 - sin(radians) * length;
 
 canvas(320, 240);
-rect(12, 12, 296, 216, "#11150e");
-line(20, 120, 300, 120, "#2a3025");
-line(160, 20, 160, 220, "#2a3025");
-line(160, 120, x, y, "#9fe870");
+rect(12, 12, 296, 216, "#f5f5f5");
+line(20, 120, 300, 120, "#d4d4d4");
+line(160, 20, 160, 220, "#d4d4d4");
+line(160, 120, x, y, "#0066ff");
+line(x, 120, x, y, "#0066ff");
+line(160, 120, x, 120, "#0066ff");
 circle(160, 120, 4);
-circle(x, y, 8, "#f0b35a");
+circle(x, y, 6, "#000000");
 `,
   },
   {
@@ -271,9 +273,9 @@ float x = 160 + cos(angle) * radius;
 float y = 120 + sin(angle) * radius;
 
 canvas(320, 240);
-line(160, 120, x, y, "#2a3025");
-circle(160, 120, 12, "#f0b35a");
-circle(x, y, 7, "#9fe870");
+line(160, 120, x, y, "#d4d4d4");
+circle(160, 120, 12, "#000000");
+circle(x, y, 7, "#0066ff");
 `,
   },
   {
@@ -288,15 +290,15 @@ float bead(float x, float amplitude, float t) {
   float phase = x / 296 * 6.28318530718;
   float y = 120 + sin(phase - t * 6.28318530718 / 6) * amplitude;
   if (y < 120) {
-    circle(x, y, 4, "#9fe870");
+    circle(x, y, 4, "#0066ff");
   } else {
-    circle(x, y, 4, "#f0b35a");
+    circle(x, y, 4, "#000000");
   }
   return y;
 }
 
 canvas(320, 240);
-line(12, 120, 308, 120, "#2a3025");
+line(12, 120, 308, 120, "#d4d4d4");
 float previous_x = 0;
 float previous_y = 0;
 for (int i = 0; i < 24; i++) {
@@ -304,11 +306,60 @@ for (int i = 0; i < 24; i++) {
   float x = 12 + i * 296 / 23;
   float y = bead(x, amplitude, t);
   if (i > 0) {
-    line(previous_x, previous_y, x, y, "#4b5344");
+    line(previous_x, previous_y, x, y, "#a3a3a3");
   }
   previous_x = x;
   previous_y = y;
 }
+`,
+  },
+  {
+    id: "mandelbrot",
+    name: "Mandelbrot",
+    source: `// Mandelbrot set: each cell tests one point c = cx + cy*i.
+// Iterate z = z*z + c; points that stay within |z| <= 2 are in the set.
+// Cells are independent, so every iteration reuses one set of CSS rules.
+int depth = input("iterations", 12, 16, 1);
+
+canvas(320, 240);
+for (int row = 0; row < 24; row++) {
+  for (int col = 0; col < 32; col++) {
+    float cx = -2.25 + col * 0.1;
+    float cy = -1.15 + row * 0.1;
+    float x = 0;
+    float y = 0;
+    int n = 0;
+    for (int i = 0; i < 16; i++) {
+      if (i >= depth || x * x + y * y > 4) { break; }
+      float t = x * x - y * y + cx;
+      y = 2 * x * y + cy;
+      x = t;
+      n = n + 1;
+    }
+    rect(col * 10, row * 10, 10, 10,
+      n == depth ? "#000000" : n > 7 ? "#0033b3" : n > 4 ? "#0066ff" : n > 2 ? "#80b3ff" : n > 1 ? "#d6e6ff" : "#ffffff");
+  }
+}
+`,
+  },
+  {
+    id: "jump",
+    name: "Jump",
+    source: `// Hold the mouse or Space to jump. Each hold is one jump:
+// release to land, then hold again before the next rock.
+float t = time(3);
+float air = hold_time(0.8);
+float height = 250 * air * (0.8 - air);
+
+float rock = 330 - t * 130;
+int hit = rock < 72 && rock > 28 && height < 20;
+
+canvas(320, 160);
+rect(0, 128, 320, 32, "#f5f5f5");
+rect(rock, 108, 20, 20, "#000000");
+circle(60, 116 - height, 12, hit ? "#d92d20" : "#0066ff");
+string state = hit ? "ouch" : press() ? "jump" : "run";
+print(state);
 `,
   },
   {

@@ -1,4 +1,4 @@
-import type { Execution, PrintedValue, Runtime, StateRule } from "./compiler";
+import type { Drawing, DrawingColor, Execution, Input, PrintedValue, Runtime, StateRule, ValueNode } from "./compiler";
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]!);
@@ -16,8 +16,33 @@ function printedValues(prints: PrintedValue[]) {
   ]);
 }
 
+// A slider's thumb is its textarea's resize grip, which is as wide as the
+// textarea's vertical scrollbar. Size both to the widest value badge (12px
+// monospace, about 7.2px per character) so the whole badge drags.
+function sliderThumb(node: ValueNode) {
+  const { minimum, maximum } = node.input as Extract<Input, { kind: "slider" }>;
+  const characters = Math.max(...[minimum, maximum].map(bound =>
+    Number(bound < 0) + String(Math.floor(Math.abs(bound))).length + (node.type === "float" ? 4 : 0)));
+  return Math.max(28, Math.ceil((characters * 7.5 + 14) / 2) * 2);
+}
+
+function drawingReads(drawing: Drawing) {
+  return [
+    ...drawing.values.filter(value => typeof value === "number"),
+    ...drawing.visible === undefined ? [] : [drawing.visible],
+    ...typeof drawing.color === "string" ? [] : [drawing.color.nodeId],
+  ];
+}
+
 function drawingValues(program: Runtime) {
-  return program.drawings.flatMap(drawing => [...drawing.values, drawing.visible]);
+  return program.drawings.flatMap(drawingReads);
+}
+
+// Each palette entry takes 100% when the stored string ID matches, else 0%.
+function paint(color: DrawingColor): string {
+  if (typeof color === "string") return color;
+  return color.palette.reduceRight((rest, choice) =>
+    `color-mix(in srgb, ${choice.color} calc((1 - abs(sign(var(--v${color.nodeId}) - ${choice.value}px))) * 100%), ${rest})`, color.fallback);
 }
 
 // Move independent calculations onto one element. A write cannot cross an
@@ -25,14 +50,19 @@ function drawingValues(program: Runtime) {
 function fuseStages(program: Runtime, live: Set<number>) {
   const source = program.rules.map(rule => rule.assignments.filter(assignment => live.has(assignment.id)));
   const rules: StateRule[] = [];
-  const optimize = (steps: Execution[]): Execution[] => {
+  // Rules inside sibling iterations are evaluated once per iteration element.
+  const repeated = new Set<number>();
+  const optimize = (steps: Execution[], inEach = false): Execution[] => {
     const result: Execution[] = [];
     let current: StateRule | undefined;
     let writes = new Set<number>();
     let reads = new Set<number>();
     for (const step of steps) {
       if (step.kind === "repeat") {
-        result.push({ ...step, odd: optimize(step.odd), even: optimize(step.even) });
+        result.push({ ...step, odd: optimize(step.odd, inEach), even: optimize(step.even, inEach) });
+        current = undefined;
+      } else if (step.kind === "each") {
+        result.push({ ...step, body: optimize(step.body, true) });
         current = undefined;
       } else if (step.kind === "step") {
         const assignments = source[step.rule];
@@ -40,6 +70,7 @@ function fuseStages(program: Runtime, live: Set<number>) {
         if (!current || assignments.some(assignment => writes.has(assignment.id) || reads.has(assignment.id))) {
           current = { id: rules.length, assignments: [] };
           rules.push(current);
+          if (inEach) repeated.add(current.id);
           result.push({ kind: "step", rule: current.id });
           writes = new Set();
           reads = new Set();
@@ -52,13 +83,13 @@ function fuseStages(program: Runtime, live: Set<number>) {
       } else {
         result.push(step);
         const values = step.kind === "print" ? printedValues([program.prints[step.printed]])
-          : [...program.drawings[step.drawing].values, program.drawings[step.drawing].visible];
+          : drawingReads(program.drawings[step.drawing]);
         values.forEach(id => reads.add(id));
       }
     }
     return result;
   };
-  return { execution: optimize(program.execution), rules };
+  return { execution: optimize(program.execution), rules, repeated };
 }
 
 // Liveness follows every possible write to a slot, including both loop banks.
@@ -83,7 +114,7 @@ function liveValues(program: Runtime) {
 
 // Values that cross elements need numeric snapshots. Local calculations can
 // remain ordinary custom properties, provided substitution stays bounded.
-function registeredValues(program: Runtime, rules: StateRule[]) {
+function registeredValues(program: Runtime, rules: StateRule[], repeated = new Set<number>()) {
   const registered = new Set([
     ...program.nodes.filter(node => node.input).map(node => node.id),
     ...printedValues(program.prints),
@@ -101,8 +132,13 @@ function registeredValues(program: Runtime, rules: StateRule[]) {
   // Count substituted characters without constructing the expanded strings.
   // Allow room for signed and fractional computed length serialization.
   const scalar = { length: 32, depth: 0 };
-  const tooLarge = (cost: typeof scalar) => cost.length > 8192 || cost.depth > 16;
   for (const rule of rules) {
+    // A rule evaluated on many sibling elements re-expands its substitutions on
+    // each one, so it snapshots sooner: in a 32×24 Mandelbrot this cut render
+    // time from 4.2s to 1.3s for 28 more registrations.
+    const tooLarge = repeated.has(rule.id)
+      ? (cost: typeof scalar) => cost.length > 2048 || cost.depth > 8
+      : (cost: typeof scalar) => cost.length > 8192 || cost.depth > 16;
     const assignments = new Map(rule.assignments.map(assignment => [assignment.id, assignment.width]));
     const costs = new Map<number, typeof scalar>();
     const measure = (id: number): typeof scalar => {
@@ -141,7 +177,7 @@ export function renderDocument(program: Runtime): string {
   const nodes = program.nodes.filter(node => live.has(node.id));
   const optimized = fuseStages(program, live);
   const stateRules = optimized.rules;
-  const registered = registeredValues(program, stateRules);
+  const registered = registeredValues(program, stateRules, optimized.repeated);
   const { prints } = program;
   const inputs = nodes.filter(node => node.input);
   const pageInputs = inputs.filter(node => node.input!.global);
@@ -159,6 +195,8 @@ export function renderDocument(program: Runtime): string {
     group.axes.add(input.axis);
   }
   const labelColumns = Math.min(18, Math.max(2, ...visibleInputs.map(node => node.input!.label.length)));
+  // A thumb at its minimum overhangs the track start by half its width.
+  const labelGap = Math.max(24, ...sliders.map(node => sliderThumb(node) / 2 + 6));
   const rules: string[] = [];
   const markup: string[] = ['<div class="computation">'];
   const controlValues: string[] = [];
@@ -254,12 +292,14 @@ export function renderDocument(program: Runtime): string {
     const { initial, maximum, minimum } = input;
     const scale = Math.max(1, Math.floor(200 / (maximum - minimum)));
     const trackWidth = (maximum - minimum) * scale;
+    // The value sits at the thumb's center: half a thumb inside either end of the textarea.
+    const thumb = sliderThumb(node);
     // Restore layout precision before flooring an input: 100cqw can otherwise
     // land just below an exact pixel (e.g. 29 becomes 28.999998).
-    const measured = `calc((round(nearest, 100cqw, 0.015625px) - 32px) / var(--scale) + ${minimum}px)`;
+    const measured = `calc((round(nearest, 100cqw, 0.015625px) - ${thumb}px) / var(--scale) + ${minimum}px)`;
     const value = `clamp(${minimum}px, ${node.type === "float" ? measured : `round(to-zero, ${measured}, 1px)`}, ${maximum}px)`;
-    rules.push(`#input-${node.id} { anchor-name: --input-${node.id}; width: ${(initial - minimum) * scale + 32}px; max-width: ${(maximum - minimum) * scale + 32}px; top: ${top - 4}px; }`);
-    rules.push(`#bridge-${node.id}, #read-${node.id} { width: anchor-size(--input-${node.id} width); --scale: ${scale}; }`);
+    rules.push(`#input-${node.id} { anchor-name: --input-${node.id}; width: ${(initial - minimum) * scale + thumb}px; max-width: ${(maximum - minimum) * scale + thumb}px; top: ${top}px; --thumb: ${thumb}px; }`);
+    rules.push(`#bridge-${node.id}, #read-${node.id} { width: anchor-size(--input-${node.id} width); --scale: ${scale}; --thumb: ${thumb}px; }`);
     rules.push(`#capture-${node.id} { --v${node.id}: ${value}; }`);
     rules.push(`#read-${node.id} { top: ${top + 12}px; --track-width: ${trackWidth}px; }`);
     rules.push(`#read-${node.id} .number { --result: ${value}; }`);
@@ -332,13 +372,24 @@ export function renderDocument(program: Runtime): string {
   // span and a style query for every possible string at every print site.
   const textTables = new Map<string, string>();
   const choiceQueries = new Set<number>();
+  // Conditional rows query their parent step, which holds the visibility slot,
+  // so a print needs no wrapper element. Rows sharing a slot share a rule.
+  const visibleRows = new Map<number, string[]>();
   const printedMarkup = prints.map((printed, index) => {
-    const numeric = printed.choices.length === 1 && "nodeId" in printed.choices[0] ? printed.choices[0] : undefined;
     const selected = printed.selectorId !== undefined;
+    const single = !selected && printed.choices.length === 1 ? printed.choices[0] : undefined;
+    const numeric = single && "nodeId" in single ? single : undefined;
     const value = selected ? `--choice: var(--v${printed.selectorId}); ` : numeric ? `--result: var(--v${numeric.nodeId}); ` : "";
-    const visibility = printed.visible === undefined ? "" : `--print-visible: var(--v${printed.visible}); `;
-    if (value || visibility) rules.push(`.print-${index} { ${visibility}${value}}`);
-    let choices: string;
+    if (value) rules.push(`.print-${index} { ${value}}`);
+    const classes = ["print", "print-row", `print-${index}`];
+    if (printed.visible !== undefined) {
+      classes.push("conditional");
+      visibleRows.set(printed.visible, [...visibleRows.get(printed.visible) ?? [], `.print-${index}.conditional`]);
+    }
+    if (printed.error) classes.push("runtime-error");
+    // A single value renders on the output itself: numbers and string tables
+    // in ::after, literal text as the row's second grid item.
+    let choices = "";
     if (selected && printed.choices.every(choice => "text" in choice)) {
       const texts = printed.choices.map(choice => choice.text);
       const key = JSON.stringify(texts);
@@ -349,7 +400,12 @@ export function renderDocument(program: Runtime): string {
         rules.push(`@counter-style ${table} { system: fixed 0; symbols: ${texts.map(cssString).join(" ")}; suffix: ""; }`);
         rules.push(`.${table}::after { counter-reset: text-value calc(var(--choice) / 1px); content: counter(text-value, ${table}); }`);
       }
-      choices = `<span class="text ${table}"></span>`;
+      classes.push(table);
+    } else if (numeric) {
+      classes.push("value", ...program.nodes[numeric.nodeId].type === "float" ? ["decimal"] : []);
+    } else if (single && "text" in single && !printed.error) {
+      classes.push("literal");
+      choices = escapeHtml(single.text);
     } else choices = printed.choices.map((choice, choiceIndex) => {
       const name = `print-${index}-choice-${choiceIndex}`;
       if (selected) {
@@ -358,48 +414,65 @@ export function renderDocument(program: Runtime): string {
       }
       return `<span class="${name} ${"text" in choice ? "text" : `number${program.nodes[choice.nodeId].type === "float" ? " decimal" : ""}`}${selected ? ` choice choice-${choiceIndex}` : ""}">${"text" in choice ? escapeHtml(choice.text) : ""}</span>`;
     }).join("");
-    const row = `<output class="print print-row print-${index}${printed.visible === undefined ? "" : " conditional"}${printed.error ? " runtime-error" : ""}" data-label="${escapeHtml(printed.label)}"${printed.error ? ' role="alert"' : ""}>${choices}</output>`;
-    return printed.visible === undefined ? row : `<div class="print-event print-${index}">${row}</div>`;
+    return `<output class="${classes.join(" ")}" data-label="${escapeHtml(printed.label)}"${printed.error ? ' role="alert"' : ""}>${choices}</output>`;
   });
   for (const index of choiceQueries) rules.push(`@container printed style(--choice: ${index}px) { .choice-${index} { display: block; } }`);
+  for (const [id, rows] of visibleRows) rules.push(`@container style(--v${id}: 1px) { ${rows.join(", ")} { display: grid; } }`);
   const execution: string[] = [];
-  let openSteps = 0;
-  const emit = (steps: Execution[]) => {
+  // Returns how many step elements remain open for the caller to close.
+  const emit = (steps: Execution[]): number => {
+    let open = 0;
     for (const step of steps) {
       if (step.kind === "step") {
         if (activeRules.has(step.rule)) {
           execution.push(`<div class="s${step.rule}">`);
-          openSteps++;
+          open++;
         }
       } else if (step.kind === "print") {
         execution.push(printedMarkup[step.printed]);
       } else if (step.kind === "draw") {
         const drawing = program.drawings[step.drawing];
         execution.push(`<div class="drawing-layer shape ${drawing.kind} shape-${step.drawing}"></div>`);
+      } else if (step.kind === "each") {
+        // Independent iterations are siblings that close their own steps.
+        for (const value of step.values) {
+          execution.push(`<div style="--v${step.counter}: ${value}px">`);
+          execution.push("</div>".repeat(emit(step.body) + 1));
+        }
       } else {
-        for (let index = 0; index < step.count; index++) emit(index % 2 ? step.even : step.odd);
+        for (let index = 0; index < step.count; index++) open += emit(index % 2 ? step.even : step.odd);
       }
     }
+    return open;
   };
-  emit(optimized.execution);
+  const openSteps = emit(optimized.execution);
   const heading = prints.length || program.drawings.length
     ? '<div class="section-heading" style="top: 12px">Output</div>'
     : '<p class="empty" style="top: 16px">Use print(expression) to display a result.</p>';
   let scene = "";
   if (program.drawings.length) {
     program.drawings.forEach((drawing, index) => {
-      const [a, b, c, d] = drawing.values.map(id => `var(--v${id})`);
+      const [a, b, c, d] = drawing.values.map(value => typeof value === "number" ? `var(--v${value})` : value);
       let geometry: string;
       if (drawing.kind === "rect") geometry = `left: ${a}; top: ${b}; width: max(0px, ${c}); height: max(0px, ${d});`;
       else if (drawing.kind === "circle") geometry = `left: ${a}; top: ${b}; width: max(0px, calc(${c} * 2)); height: max(0px, calc(${c} * 2)); transform: translate(-50%, -50%); border-radius: 50%;`;
       else geometry = `left: ${a}; top: ${b}; width: hypot(calc(${c} - ${a}), calc(${d} - ${b})); height: 2px; transform-origin: 0 50%; transform: translateY(-50%) rotate(atan2(calc(${d} - ${b}), calc(${c} - ${a})));`;
-      rules.push(`.shape-${index}::after { ${geometry} background: ${drawing.color}; opacity: calc(var(--v${drawing.visible}) / 1px); }`);
+      rules.push(`.shape-${index}::after { ${geometry} background: ${paint(drawing.color)};${drawing.visible === undefined ? "" : ` opacity: calc(var(--v${drawing.visible}) / 1px);`} }`);
     });
     scene = `<div class="scene-frame" role="img" aria-label="Program drawing" style="width: ${program.canvas.width}px; height: ${program.canvas.height}px"></div>`;
   }
   // Normal flow stacks only visible rows. The canvas follows the rows, and
   // drawing layers anchor to it while retaining their earlier state snapshots.
   markup.push(`<div class="output-space"><div class="output-content">${heading}<div class="execution">${execution.join("")}${scene}${"</div>".repeat(openSteps)}</div></div></div>${animatedValues.length ? "</div>" : ""}${"</div></div>".repeat(sliders.length)}</div>`);
+
+  // Emit template rules only for the features this program uses.
+  const when = (condition: boolean, css: string) => condition ? css : "";
+  const hasSliders = sliders.length > 0;
+  const printsNumber = (float: boolean) => prints.some(printed => printed.choices.some(choice => "nodeId" in choice && (!float || program.nodes[choice.nodeId].type === "float")));
+  const hasNumbers = hasSliders || printsNumber(false);
+  const hasDecimals = sliders.some(node => node.type === "float") || printsNumber(true);
+  const hasDrawings = program.drawings.length > 0;
+  const hasMotion = clocks.length > 0 || holds.length > 0;
 
   return `<!doctype html>
 <html lang="en">
@@ -409,70 +482,73 @@ export function renderDocument(program: Runtime): string {
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'none'; base-uri 'none'; form-action 'none'">
 <title>zero-js output</title>
 <style>
-:root { color-scheme: dark; font: 14px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; color: #d7ddcc; background: #0d0f0b; }
-::selection { background: #9fe87044; }
+:root { color-scheme: light; font: 14px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; color: #000000; background: #ffffff; }
+::selection { background: #0066ff33; }
 @property --program-width { syntax: "<length>"; inherits: true; initial-value: 0px; }
-${prints.some(printed => printed.visible !== undefined) ? '@property --print-visible { syntax: "<length>"; inherits: true; initial-value: 0px; }' : ""}
-@property --result { syntax: "<length>"; inherits: true; initial-value: 0px; }
-@counter-style decimal-three { system: numeric; symbols: "0" "1" "2" "3" "4" "5" "6" "7" "8" "9"; pad: 3 "0"; }
-@counter-style decimal-sign { system: fixed 0; symbols: "" "-"; }
+${when(hasNumbers, '@property --result { syntax: "<length>"; inherits: true; initial-value: 0px; }')}
+${when(hasDecimals, `@counter-style decimal-three { system: numeric; symbols: "0" "1" "2" "3" "4" "5" "6" "7" "8" "9"; pad: 3 "0"; }
+@counter-style decimal-sign { system: fixed 0; symbols: "" "-"; }`)}
 ${prints.some(printed => printed.selectorId !== undefined) ? '@property --choice { syntax: "<length>"; inherits: true; initial-value: 0px; }' : ""}
 * { box-sizing: border-box; }
 body { margin: 0; padding: 28px 24px; }
 .program { position: relative; min-height: ${top + 64}px; container-type: inline-size; }
-.input-label { position: absolute; left: 0; max-width: calc(var(--slider-left) - 24px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; line-height: 24px; }
-.computation { --program-width: 100cqw; --slider-left: calc(${labelColumns}ch + 24px); position: absolute; left: 0; top: 0; width: 100%; font-size: 13px; }
+${when(visibleInputs.length > 0, `.input-label { position: absolute; left: 0; max-width: calc(var(--slider-left) - ${labelGap}px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; line-height: 24px; }`)}
+.computation { --program-width: 100cqw; --slider-left: calc(${labelColumns}ch + ${labelGap}px); position: absolute; left: 0; top: 0; width: 100%; font-size: 13px; }
 ${pageInputs.length ? `.page-controls { position: fixed; inset: 0; z-index: 2; overflow: hidden; opacity: 0; scrollbar-width: none; overscroll-behavior: contain; }
 .page-controls::-webkit-scrollbar { display: none; }
 .page-input { position: sticky; left: 0; top: 0; display: block; width: 100vw; height: 100dvh; margin: 0; padding: 0; border: 0; appearance: none; }
 .program { z-index: 3; pointer-events: none; }
 .input, .control, .input-label, .motion-control { pointer-events: auto; }
-body:has(#page-input:focus-visible) .scene-frame { outline: 2px solid #9fe870; outline-offset: 3px; }` : ""}
-.input-bridge { position: absolute; left: 0; top: 0; container-type: inline-size; }
+body:has(#page-input:focus-visible) .scene-frame { outline: 2px solid #0066ff; outline-offset: 3px; }` : ""}
+${when(hasSliders, `.input-bridge { position: absolute; left: 0; top: 0; container-type: inline-size; }`)}
 .output-space { position: absolute; left: 0; top: ${top}px; width: var(--program-width); overflow-x: auto; }
 .output-content { position: relative; min-width: ${program.drawings.length ? program.canvas.width + 2 : 0}px; padding-bottom: 16px; }
 .execution { padding-top: 48px; }
-.input-reader::before, .input-reader::after { content: ""; position: absolute; left: 24px; top: -1px; height: 2px; border-radius: 2px; }
-.input-reader::before { width: var(--track-width); background: #2a3025; }
-.input-reader::after { width: max(0px, calc(100% - 32px)); background: #9fe870; }
-.input { position: absolute; left: calc(var(--slider-left) - 24px); height: 24px; min-width: 32px; padding: 0; border: 0; margin: 0; font: inherit; resize: horizontal; overflow: auto; opacity: 0; cursor: ew-resize; }
-.input:focus-visible + .input-reader .slider-value { outline: 2px solid #9fe870; outline-offset: 3px; }
+${when(hasSliders, `.input-reader::before, .input-reader::after { content: ""; position: absolute; left: calc(var(--thumb) / 2); top: -1px; height: 2px; border-radius: 2px; }
+.input-reader::before { width: var(--track-width); background: #e5e5e5; }
+.input-reader::after { width: max(0px, calc(100% - var(--thumb))); background: #0066ff; }
+.input { position: absolute; left: calc(var(--slider-left) - var(--thumb) / 2); height: 24px; min-width: var(--thumb); padding: 0; border: 0; margin: 0; font: inherit; resize: horizontal; overflow: hidden scroll; opacity: 0; cursor: ew-resize; }
+/* The resize grip takes the scrollbar's width, so it covers the whole badge. */
+.input::-webkit-scrollbar { width: var(--thumb); background: transparent; }
+.input:focus-visible + .input-reader .slider-value { outline: 2px solid #0066ff; outline-offset: 3px; }`)}
 ${inputs.some(node => node.input!.kind !== "slider") ? `.control { position: absolute; left: var(--slider-left); margin: 0; font: inherit; color: inherit; }
-.control:focus-visible { outline: 2px solid #9fe870; outline-offset: 3px; }
-.control-help { position: absolute; left: var(--slider-left); font-size: 11px; line-height: 18px; color: #7d8773; }
-.toggle-input { width: 28px; height: 24px; accent-color: #9fe870; cursor: pointer; }
-.press-input, .typed-input { height: 28px; padding: 3px 10px; background: #0d0f0b; border: 1px solid #3d4636; border-radius: 2px; }
+.control:focus-visible { outline: 2px solid #0066ff; outline-offset: 3px; }
+.control-help { position: absolute; left: var(--slider-left); font-size: 11px; line-height: 18px; color: #666666; }
+.toggle-input { width: 28px; height: 24px; accent-color: #0066ff; cursor: pointer; }
+.press-input, .typed-input { height: 28px; padding: 3px 10px; background: #ffffff; border: 1px solid #d4d4d4; border-radius: 2px; }
 .press-input { cursor: pointer; }
-.press-input:active { background: #9fe870; color: #0d0f0b; border-color: #9fe870; }
+.press-input:active { background: #0066ff; color: #ffffff; border-color: #0066ff; }
 .typed-input { width: 52px; }
-.typed-input:valid { border-color: #9fe870; background: #1a2416; }
-.scroll-input { width: min(200px, calc(var(--program-width) - var(--slider-left))); height: 80px; padding: 0; border: 1px solid #3d4636; border-radius: 2px; background: transparent; overscroll-behavior: contain; }
-.scroll-world { display: block; background: repeating-linear-gradient(0deg, transparent 0 19px, #1f241b 19px 20px), repeating-linear-gradient(90deg, transparent 0 19px, #1f241b 19px 20px); }` : ""}
-.reader { position: absolute; left: 0; padding: 0; border: 0; margin: 0; height: 24px; container-type: inline-size; pointer-events: none; }
-.number { position: absolute; left: 0; width: max-content; font-variant-numeric: tabular-nums; }
+.typed-input:valid { border-color: #0066ff; background: #e8f0ff; }
+.scroll-input { width: min(200px, calc(var(--program-width) - var(--slider-left))); height: 80px; padding: 0; border: 1px solid #d4d4d4; border-radius: 2px; background: transparent; overscroll-behavior: contain; }
+.scroll-world { display: block; background: repeating-linear-gradient(0deg, transparent 0 19px, #eeeeee 19px 20px), repeating-linear-gradient(90deg, transparent 0 19px, #eeeeee 19px 20px); }` : ""}
+${when(hasSliders, `.reader { position: absolute; left: 0; padding: 0; border: 0; margin: 0; height: 24px; container-type: inline-size; pointer-events: none; }`)}
+${when(hasNumbers, `.number { position: absolute; left: 0; width: max-content; font-variant-numeric: tabular-nums; }
 /* Output reads stored values directly, without a round-trip through cqw. */
-.number::after { counter-reset: value calc(var(--result) / 1px); content: counter(value); }
-.number.decimal::after { --scaled: round(nearest, calc(abs(var(--result)) / 1px * 1000), 1); counter-reset: negative calc(max(0, -1 * sign(var(--result))) * sign(var(--scaled))) whole round(down, calc(var(--scaled) / 1000), 1) fraction mod(var(--scaled), 1000); content: counter(negative, decimal-sign) counter(whole) "." counter(fraction, decimal-three); }
-.input-reader { left: calc(var(--slider-left) - 24px); }
-.slider-value { left: calc(100% - 8px); top: 0; z-index: 1; min-width: 28px; padding: 3px 7px; border-radius: 2px; background: #9fe870; color: #0d0f0b; transform: translate(-50%, -50%); font-size: 12px; line-height: 18px; text-align: center; }
-.section-heading { position: absolute; left: 0; right: 0; border-top: 1px dashed #2a3025; padding-top: 12px; font-size: 11px; letter-spacing: .08em; text-transform: lowercase; color: #7d8773; }
-.print-event { container-name: print-event; }
-.print-row { display: grid; grid-template-columns: 60% 40%; min-height: 44px; width: var(--program-width); }
-${prints.some(printed => printed.visible !== undefined) ? '.print-row.conditional { display: none; }\n@container print-event style(--print-visible: 1px) { .print-row.conditional { display: grid; } }' : ""}
-.print::before { content: attr(data-label); grid-column: 1; grid-row: 1; min-width: 0; padding-top: 3px; padding-right: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: #7d8773; }
+.number::after, .value::after { counter-reset: value calc(var(--result) / 1px); content: counter(value); font-variant-numeric: tabular-nums; }`)}
+${when(hasDecimals, `.number.decimal::after, .value.decimal::after { --scaled: round(nearest, calc(abs(var(--result)) / 1px * 1000), 1); counter-reset: negative calc(max(0, -1 * sign(var(--result))) * sign(var(--scaled))) whole round(down, calc(var(--scaled) / 1000), 1) fraction mod(var(--scaled), 1000); content: counter(negative, decimal-sign) counter(whole) "." counter(fraction, decimal-three); }`)}
+${when(hasSliders, `.input-reader { left: calc(var(--slider-left) - var(--thumb) / 2); }
+.slider-value { left: calc(100% - var(--thumb) / 2); top: 0; z-index: 1; width: var(--thumb); padding: 3px 0; border-radius: 2px; background: #0066ff; color: #ffffff; transform: translate(-50%, -50%); font-size: 12px; line-height: 18px; text-align: center; }`)}
+.section-heading { position: absolute; left: 0; right: 0; border-top: 1px dashed #e5e5e5; padding-top: 12px; font-size: 11px; letter-spacing: .08em; text-transform: lowercase; color: #666666; }
+${when(prints.length > 0, `.print-row { display: grid; grid-template-columns: 60% 40%; min-height: 44px; width: var(--program-width); }
+.print::before { content: attr(data-label); grid-column: 1; grid-row: 1; min-width: 0; padding-top: 3px; padding-right: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: #666666; }
 .print { position: relative; min-width: 0; container-name: printed; }
-.print .number, .print .text { position: static; grid-column: 2; grid-row: 1; font-size: 22px; color: #eef3e4; }
-.print .text { white-space: pre; }
-${prints.some(printed => printed.error) ? '.runtime-error { grid-template-columns: 1fr; gap: 6px; padding: 10px 0; color: #ff7a66; }\n.runtime-error .text { grid-column: 1; grid-row: 2; white-space: normal; overflow-wrap: anywhere; font-size: 13px; line-height: 1.5; }' : ""}
-.choice { display: none; }
-.scene-frame { anchor-name: --scene; position: relative; box-sizing: content-box; border: 1px solid #2a3025; border-radius: 2px; background: #070806; }
+/* A single value is the row's second grid item: ::after, or literal text. */
+.print::after, .print .number, .print .text { grid-column: 2; grid-row: 1; }
+.print::after, .print.literal, .print .number, .print .text { font-size: 22px; color: #000000; }
+.print::after, .print.literal, .print .text { white-space: pre; }
+.print .number, .print .text { position: static; }`)}
+${when(visibleRows.size > 0, '.print-row.conditional { display: none; }')}
+${prints.some(printed => printed.error) ? '.runtime-error { grid-template-columns: 1fr; gap: 6px; padding: 10px 0; color: #d92d20; }\n.runtime-error .text { grid-column: 1; grid-row: 2; white-space: normal; overflow-wrap: anywhere; font-size: 13px; line-height: 1.5; }' : ""}
+${when(choiceQueries.size > 0, '.choice { display: none; }')}
+${when(hasDrawings, `.scene-frame { anchor-name: --scene; position: relative; box-sizing: content-box; border: 1px solid #e5e5e5; border-radius: 2px; background: #ffffff; }
 .drawing-layer { position: absolute; position-anchor: --scene; left: calc(anchor(left) + 1px); top: calc(anchor(top) + 1px); z-index: 1; width: ${program.canvas.width}px; height: ${program.canvas.height}px; overflow: hidden; border-radius: 3px; pointer-events: none; }
-.drawing-layer::after { content: ""; position: absolute; }
-.motion-control { position: absolute; right: 0; top: 13px; z-index: 1; display: flex; align-items: center; gap: 6px; font-size: 12px; color: #7d8773; }
-.motion-control input { accent-color: #9fe870; margin: 0; }
+.drawing-layer::after { content: ""; position: absolute; }`)}
+${when(hasMotion, `.motion-control { position: absolute; right: 0; top: 13px; z-index: 1; display: flex; align-items: center; gap: 6px; font-size: 12px; color: #666666; }
+.motion-control input { accent-color: #0066ff; margin: 0; }
 .program:has(#pause-motion:checked) { --clock-play: paused; }
-@media (prefers-reduced-motion: reduce) { .program { --clock-play: paused; } }
-.empty { position: absolute; margin: 0; color: #7d8773; font-size: 12px; }
+@media (prefers-reduced-motion: reduce) { .program { --clock-play: paused; } }`)}
+${when(!prints.length && !hasDrawings, '.empty { position: absolute; margin: 0; color: #666666; font-size: 12px; }')}
 .unsupported, .scroll-unsupported { display: none; font-size: 12px; }
 @supports not ((width: anchor-size(--test width)) and (counter-reset: value calc(1px / 1px)) and (width: round(down, 1px, 1px)) and (width: abs(-1px)) and (width: calc(sign(1px) * 1px))) {
   .unsupported { display: block; }

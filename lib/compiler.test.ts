@@ -36,8 +36,10 @@ function evaluateProgram(source: string, inputs: Record<string, number> = {}, op
     const label = html.match(new RegExp(`<label[^>]+for="input-${id}"[^>]*>([^<]*)</label>`))![1];
     const scale = Number(html.match(new RegExp(`#bridge-${id}, #read-${id} \\{[^}]*--scale: (\\d+)`))![1]);
     const minimum = Number(html.match(new RegExp(`#capture-${id} \\{ --v${id}: clamp\\((-?[\\d.]+)px`))![1]);
+    // The value sits half a thumb inside each end of the textarea.
+    const thumb = Number(html.match(new RegExp(`#input-${id} \\{[^}]*--thumb: (\\d+)px`))![1]);
     inputScales.set(`v${id}`, scale);
-    inputWidths.set(`v${id}`, label in inputs ? (inputs[label] - minimum) * scale + 32 : Number(width));
+    inputWidths.set(`v${id}`, label in inputs ? (inputs[label] - minimum) * scale + thumb : Number(width));
   }
   for (const [, id, period] of html.matchAll(/@keyframes clock-(\d+) \{[^\n]*to \{ --clock-\d+: ([\d.]+)px/g)) values.set(`clock-${id}`, seconds % Number(period));
   const functions: Record<string, (...args: number[]) => number> = {};
@@ -104,41 +106,76 @@ function evaluateProgram(source: string, inputs: Record<string, number> = {}, op
   const controls = html.match(/\.control-values \{([^}]+)\}/)?.[1];
   if (controls) for (const [id, width] of declarations(controls)) values.set(id, evaluate(width, name => values.get(name) ?? 0));
   const rules = new Map([...html.matchAll(/\.s(\d+) \{([^}]+)\}/g)].map(match => [match[1], declarations(match[2])]));
+  // Resolve nested color-mix(in srgb, #hex weight%, rest) palettes to the selected color.
+  const paint = (value: string): string => {
+    const prefix = "color-mix(in srgb, ";
+    if (!value.startsWith(prefix)) return value;
+    const inner = value.slice(prefix.length, -1);
+    let depth = 0, split = -1;
+    for (let index = 0; index < inner.length && split < 0; index++) {
+      if (inner[index] === "(") depth++;
+      else if (inner[index] === ")") depth--;
+      else if (inner[index] === "," && depth === 0) split = index;
+    }
+    const [, color, weight] = inner.slice(0, split).match(/^(#[\da-f]+) (calc\(.+\))$/i)!;
+    const percent = evaluate(weight.replace(/%/g, ""), name => values.get(name) ?? 0);
+    assert.ok(percent === 0 || percent === 100, `Palette weight ${percent}%`);
+    return percent ? color : paint(inner.slice(split + 2));
+  };
   const drawings: { kind: string; x: number; y: number; width: number; height: number; color: string }[] = [];
   const outputs: (string | number)[] = [];
-  const readPrint = (id: string, body: string): string | number => {
+  const formatNumber = (number: number, decimal: boolean) => {
+    if (!decimal) return Math.round(number);
+    const rounded = Math.round(Math.abs(number) * 1000) / 1000;
+    return rounded === 0 ? 0 : Math.sign(number) * rounded;
+  };
+  // Single values render on the output itself (value, literal, or a text
+  // table); only mixed choices keep one span per branch.
+  const readPrint = (id: string, classes: string[], body: string): string | number => {
     const choice = html.match(new RegExp(`\\.print-${id} \\{[^}]*--choice: var\\(--(v\\d+)\\)`));
     const index = choice ? values.get(choice[1])! : 0;
-    const table = body.match(/class="text (text-table-\d+)"/);
+    const table = classes.find(name => name.startsWith("text-table-"));
     if (table) {
-      const symbols = html.match(new RegExp(`@counter-style ${table[1]} \\{ system: fixed 0; symbols: (.*?); suffix:`))![1];
+      const symbols = html.match(new RegExp(`@counter-style ${table} \\{ system: fixed 0; symbols: (.*?); suffix:`))![1];
       const texts = [...symbols.matchAll(/"([^"]*)"/g)].map(match => match[1].replace(/\\([0-9a-f]{1,6}) /g, (_, code: string) => String.fromCodePoint(parseInt(code, 16))));
       assert.ok(index >= 0 && index < texts.length, `Missing string symbol ${index}`);
       return texts[index];
+    }
+    if (classes.includes("literal")) return decodeHtml(body);
+    if (classes.includes("value")) {
+      const value = html.match(new RegExp(`\\.print-${id} \\{[^}]*--result: var\\(--(v\\d+)\\)`))!;
+      return formatNumber(values.get(value[1])!, classes.includes("decimal"));
     }
     const selected = body.match(new RegExp(`<span class="print-${id}-choice-${index} ([^"]+)">(.*?)</span>`));
     assert.ok(selected, `Missing output branch ${index}`);
     if (choice) assert.ok(html.includes(`@container printed style(--choice: ${index}px) { .choice-${index} { display: block; } }`));
     if (selected[1].split(" ").includes("text")) return decodeHtml(selected[2]);
-    const selector = choice ? `print-${id}-choice-${index}` : `print-${id}`;
-    const value = html.match(new RegExp(`\\.${selector} \\{[^}]*--result: var\\(--(v\\d+)\\)`))!;
-    const number = values.get(value[1])!;
-    if (!selected[1].split(" ").includes("decimal")) return Math.round(number);
-    const rounded = Math.round(Math.abs(number) * 1000) / 1000;
-    return rounded === 0 ? 0 : Math.sign(number) * rounded;
+    const value = html.match(new RegExp(`\\.print-${id}-choice-${index} \\{[^}]*--result: var\\(--(v\\d+)\\)`))!;
+    return formatNumber(values.get(value[1])!, selected[1].split(" ").includes("decimal"));
   };
-  for (const step of html.matchAll(/<div class="s(\d+)">|<div class="drawing-layer shape (\w+) shape-(\d+)">|<output class="print print-row print-(\d+)(?: conditional)?(?: runtime-error)?" data-label="[^"]*"(?: role="alert")?>(.*?)<\/output>/g)) {
+  // A conditional row is displayed when its parent's visibility slot is 1px.
+  const visibility = new Map<string, string>();
+  for (const [, id, selectors] of html.matchAll(/@container style\(--(v\d+): 1px\) \{ ([^{]+) \{ display: grid; \} \}/g)) {
+    for (const [, print] of selectors.matchAll(/\.print-(\d+)\.conditional/g)) visibility.set(print, id);
+  }
+  // Independent iterations set their counter on a sibling element. Iterations
+  // only write their own fresh slots, so a flat value map stays exact.
+  for (const step of html.matchAll(/<div class="s(\d+)">|<div class="drawing-layer shape (\w+) shape-(\d+)">|<output class="print print-row print-(\d+)([^"]*)" data-label="[^"]*"(?: role="alert")?>(.*?)<\/output>|<div style="--(v\d+): (-?\d+)px">/g)) {
     if (step[1]) {
       const computed = scope(rules.get(step[1])!, values);
       for (const [name, value] of computed) values.set(name, value);
+    } else if (step[7]) {
+      values.set(step[7], Number(step[8]));
     } else if (step[4]) {
-      const visible = html.match(new RegExp(`\\.print-${step[4]} \\{ --print-visible: ([^;]+);`))?.[1] ?? "1px";
-      if (evaluate(visible, name => values.get(name) ?? 0) > 0) outputs.push(readPrint(step[4], step[5]));
+      const classes = step[5].trim().split(/\s+/).filter(Boolean);
+      const visible = visibility.get(step[4]);
+      assert.equal(classes.includes("conditional"), visible !== undefined, `print-${step[4]} visibility`);
+      if (visible === undefined || values.get(visible) === 1) outputs.push(readPrint(step[4], classes, step[6]));
     } else {
       const body = html.match(new RegExp(`\\.shape-${step[3]}::after \\{([^}]+)\\}`))![1];
       const properties = new Map([...body.matchAll(/([a-z-]+): ([^;]+);/g)].map(match => [match[1], match[2]]));
       const value = (name: string) => evaluate(properties.get(name)!, name => values.get(name) ?? 0);
-      if (value("opacity") > 0) drawings.push({ kind: step[2], x: value("left"), y: value("top"), width: value("width"), height: value("height"), color: properties.get("background")! });
+      if (!properties.has("opacity") || value("opacity") > 0) drawings.push({ kind: step[2], x: value("left"), y: value("top"), width: value("width"), height: value("height"), color: paint(properties.get("background")!) });
     }
   }
   return { outputs, drawings };
@@ -157,7 +194,9 @@ test("all examples compile to standalone, script-free documents", () => {
     assert.ok(program.html.startsWith("<!doctype html>"));
     assert.doesNotMatch(program.html, /<script\b|\son\w+=/i);
     assert.match(program.html, /script-src 'none'/);
-    assert.match(program.html, /counter-reset: value calc\(var\(--result\) \/ 1px\)/);
+    // Number formatting is emitted exactly when a slider or print shows a number.
+    const numbers = /class="[^"]*\b(?:value|number)\b/.test(program.html);
+    assert.equal(/counter-reset: value calc\(var\(--result\) \/ 1px\)/.test(program.html), numbers, example.id);
   }
 });
 
@@ -213,7 +252,9 @@ test("comments, single-quoted inputs, default inputs, and empty programs work", 
   assert.equal(compile("int a = input('a', 101);").ok, false);
   const program = valid("int a = input('a', 0); print(a + 2);");
   assert.equal(program.outputs, 1);
-  assert.match(program.html, /#input-0 \{ anchor-name: --input-0; width: 32px;/);
+  // A 0–100 int slider has a three-character badge: 3 × 7.5px + 14px, rounded up to even.
+  assert.match(program.html, /#input-0 \{ anchor-name: --input-0; width: 38px;[^}]*--thumb: 38px; \}/);
+  assert.match(valid("float x = input('x', -0.5, 10, -10); print(x);").html, /--thumb: 68px;/);
 });
 
 test("toggle, held press, and typed inputs feed conditions, functions, loops, and arrays", () => {
@@ -277,6 +318,58 @@ test("global input APIs share one invisible page surface and preserve numeric ty
     'float x = arrow_y(1, 2);', 'int n = 10; float x = arrow_x(n);',
     'float t = hold_time(0);', 'float t = hold_time(3601);', 'string a = click();',
     'int f() { int p = press(); return p; }',
+  ]) assert.equal(compile(source).ok, false, source);
+});
+
+test("page inputs can be read inline in any top-level expression and share one slot", () => {
+  const source = `int total = 0;
+    for (int i = 0; i < 3; i++) { if (press()) { total = total + 1; } }
+    if (click()) { int held = hold_time(2); print(held); }
+    print(click() ? 5 : 7); print(total); print(click() + press()); print(arrow_x(10));`;
+  for (const cssFunctions of [false, true]) {
+    assert.deepEqual(outputs(source, {}, { cssFunctions }), [7, 0, 0, 0]);
+    assert.deepEqual(outputs(source, { click: 1, press: 1, hold_time: 1.5, arrow_x: 50 }, { cssFunctions }), [1, 5, 3, 2, 5]);
+  }
+  const html = valid(source).html;
+  assert.equal((html.match(/id="page-input"/g) ?? []).length, 1);
+  assert.equal((html.match(/body:has\(#page-input:checked\)/g) ?? []).length, 1);
+  assert.equal((html.match(/body:has\(#page-input:active\) \.computation \{ --v/g) ?? []).length, 1);
+  // A declared page input and an inline read of it use the same slot.
+  assert.equal((valid("int a = click(); print(a + click());").html.match(/#page-input:checked/g) ?? []).length, 1);
+  for (const source of [
+    "int f() { return click(); } print(f());", 'int a = 1 + input("a");',
+    'if (1) { int a = toggle("a"); }', 'int b = 1; if (b) { int a = input("a"); }',
+  ]) assert.equal(compile(source).ok, false, source);
+});
+
+test("drawing colors can be computed from conditions, variables, and functions", () => {
+  const source = `canvas(320, 240);
+    rect(12, 12, 296, 216, click() ? "#11150e" : "#ff0");
+    string tone = "#abc";
+    if (press()) { tone = "#def"; }
+    circle(10, 10, 4, tone);
+    string pick(int n) { if (n > 1) { return "#123456"; } return "not a color"; }
+    line(0, 0, 1, 1, pick(arrow_x(4)));
+    rect(0, 0, 1, 1, click() ? "#fff" : "#fff");`;
+  for (const cssFunctions of [false, true]) {
+    const colors = (inputs: Record<string, number>) => evaluateProgram(source, inputs, { cssFunctions }).drawings.map(shape => shape.color);
+    assert.deepEqual(colors({}), ["#ff0", "#abc", "#000000", "#fff"]);
+    assert.deepEqual(colors({ click: 1, press: 1, arrow_x: 100 }), ["#11150e", "#def", "#123456", "#fff"]);
+  }
+  const html = valid(source).html;
+  // A ternary of literals tests all but its last color; identical leaves stay static.
+  assert.match(html, /\.shape-0::after \{[^}]*background: color-mix\(in srgb, #11150e calc\([^}]*\), #ff0\);/);
+  assert.match(html, /\.shape-3::after \{[^}]*background: #fff;/);
+  // Only computed colors intern their literals as strings.
+  const printed = valid('rect(0, 0, 1, 1, "#abc"); string s = "x"; print(s);').html;
+  assert.doesNotMatch(printed, /symbols:[^;]*#abc/);
+  // A non-color string selects the default color and never reaches the CSS text.
+  const injected = 'string c = "red; color: red"; rect(0, 0, 2, 3, c);';
+  assert.deepEqual(evaluateProgram(injected).drawings.map(shape => shape.color), ["#000000"]);
+  assert.doesNotMatch(valid(injected).html, /color: red/);
+  for (const source of [
+    'rect(0, 0, 1, 1, click() ? "red" : "#fff");', "rect(0, 0, 1, 1, 5);",
+    "rect(0, 0, 1, 1, click() ? 1 : 2);", 'int f() { rect(0, 0, 1, 1, click() ? "#fff" : "#000"); return 1; }',
   ]) assert.equal(compile(source).ok, false, source);
 });
 
@@ -475,9 +568,15 @@ test("demo outputs cover defaults, boundaries, and changing inputs", () => {
   assert.ok(Math.abs(Number(loop) - 5.37) < 0.01, String(loop));
   assert.deepEqual(digits, [1, 5, 37]);
   // 01:05.37 lights 6+2+6+5+5+3 segments, plus the colon and decimal point.
-  const lit = evaluateProgram(clock, {}, {}, 65.37).drawings.filter(shape => shape.color === "#9fe870");
+  const lit = evaluateProgram(clock, {}, {}, 65.37).drawings.filter(shape => shape.color === "#0066ff");
   assert.equal(lit.length, 30);
-  assert.deepEqual(EXAMPLES.map(example => example.id), ["clock", "addition", "rsa", "gcd", "fibonacci", "prime", "fizzbuzz", "sorting", "temperature", "geometry", "orbit", "wave", "collatz"]);
+  assert.deepEqual(EXAMPLES.map(example => example.id), ["addition", "clock", "rsa", "gcd", "fibonacci", "prime", "fizzbuzz", "sorting", "temperature", "geometry", "orbit", "wave", "mandelbrot", "jump", "collatz"]);
+  // At 2 seconds the rock reaches the runner; 0.4 seconds into a hold clears it.
+  const jump = EXAMPLES.find(example => example.id === "jump")!.source;
+  assert.deepEqual(outputs(jump, {}, {}, 2), ["ouch"]);
+  assert.deepEqual(outputs(jump, { press: 1, hold_time: 0.4 }, {}, 2), ["jump"]);
+  assert.deepEqual(outputs(jump, { press: 1, hold_time: 5 }, {}, 2), ["ouch"]);
+  assert.deepEqual(outputs(jump, {}, {}, 0.5), ["run"]);
   assert.deepEqual(outputs(EXAMPLES.find(example => example.id === "addition")!.source), [200]);
   for (const [n, expected] of [[0, 0], [1, 1], [5, 5], [10, 55]]) {
     assert.deepEqual(outputs(EXAMPLES.find(example => example.id === "fibonacci")!.source, { n }), [expected]);
@@ -1113,7 +1212,7 @@ test("signed integers truncate toward zero and floats retain fractions across ca
     print(-1000000 - 1); print(1000000 + 1);
   `;
   for (const cssFunctions of [false, true]) assert.deepEqual(outputs(source, {}, { cssFunctions }), [-2, -.125, -.5, -1.25, -2, -.25, .625, .001, 0, -1000000, 1000000]);
-  assert.match(valid('print(1.0);').html, /class="[^"\n]*number decimal"/);
+  assert.match(valid('print(1.0);').html, /class="[^"\n]*value decimal"/);
   assert.deepEqual(outputs('print(sin(0)); print(cos(0)); print(tan(0)); print(atan2(1, 0));'), [0, 1, 0, 1.571]);
 });
 
@@ -1176,6 +1275,78 @@ test("drawing-only outputs retain live geometry and generate positioned HTML sha
   assert.match(program.html, /\.shape-2::after \{[^}]+width: hypot\([^}]+rotate\(atan2/);
   assert.doesNotMatch(program.html, /--v2:|<script\b|<canvas\b|<svg\b/);
   assert.match(program.html, /width: max\(0px/);
+});
+
+test("constant geometry, single prints, unused features, and short loops add no CSS state or wrappers", () => {
+  // Literal slots fold into reads; var-free geometry is written into the shape rule.
+  const shapes = 'canvas(100, 100); float x = 10; rect(x + 6, 20, 28, 6, "#123"); circle(x, x, 4);';
+  const drawing = valid(shapes).html;
+  assert.doesNotMatch(drawing, /@property --v\d+/);
+  assert.match(drawing, /\.shape-0::after \{ left: clamp\(-1000000px, calc\(10px \+ 6px\), 1000000px\); top: 20px;/);
+  assert.doesNotMatch(drawing, /\.shape-\d+::after \{[^}]*opacity/);
+  assert.deepEqual(evaluateProgram(shapes).drawings.map(({ x, y, width, height }) => [x, y, width, height]), [[16, 20, 28, 6], [10, 10, 8, 8]]);
+  // Conditional rows query their parent step; single values need no span.
+  const source = 'int n = input("n", 3, 5); for (int i = 0; i < 6; i++) { if (i < n) { print(i); } } print(n * 0.5); print("done");';
+  const printed = valid(source).html;
+  assert.doesNotMatch(printed, /print-event|print-visible|<output[^>]*>[^<]*<span/);
+  assert.match(printed, /<output class="print print-row print-0 conditional value" data-label="i"><\/output>/);
+  assert.match(printed, /<output class="print print-row print-\d+ value decimal"/);
+  assert.match(printed, /class="print print-row print-\d+ literal" data-label="&quot;done&quot;">done<\/output>/);
+  assert.deepEqual(outputs(source, { n: 3 }), [0, 1, 2, 1.5, "done"]);
+  assert.deepEqual(outputs(source, { n: 0 }), [0, "done"]);
+  // Template rules appear only for features the program uses.
+  const plain = valid("print(1);").html;
+  for (const rule of [/\.scene-frame \{/, /\.slider-value \{/, /\.motion-control \{/, /@counter-style decimal-three/, /\.choice \{/, /\.empty \{/, /\.print-row\.conditional/]) {
+    assert.doesNotMatch(plain, rule);
+  }
+  assert.match(valid("print(1.5);").html, /@counter-style decimal-three/);
+  assert.match(valid("int x = 1;").html, /\.empty \{/);
+  // Loops of at most four iterations unroll and fuse into the enclosing step.
+  const loop = (end: number) => `int n = input("n", 3, 9); int total = 0; for (int i = 0; i < ${end}; i++) { total = total + n * i; } print(total);`;
+  assert.equal((valid(loop(4)).html.match(/<div class="s\d+">/g) ?? []).length, 1);
+  assert.ok((valid(loop(5)).html.match(/<div class="s\d+">/g) ?? []).length > 1);
+  assert.deepEqual(outputs(loop(4), { n: 3 }), [18]);
+  assert.deepEqual(outputs(loop(5), { n: 3 }), [30]);
+});
+
+test("independent loop iterations run as siblings that share one set of rules", () => {
+  const siblings = (html: string) => (html.match(/<div style="--v\d+: -?\d+px">/g) ?? []).length;
+  const source = (count: number) => `int k = input("k", 2, 5);
+    for (int i = 0; i < ${count}; i++) { int doubled = i * k; if (i % 2 == 1) { continue; } print(doubled); }
+    print(k);`;
+  assert.deepEqual(outputs(source(5), { k: 3 }), [0, 6, 12, 3]);
+  const small = valid(source(5)).html, large = valid(source(100)).html;
+  assert.equal(siblings(small), 5);
+  assert.equal(siblings(large), 100);
+  // The body compiles once, not once per bank, and depth no longer grows.
+  const styles = (html: string) => html.slice(html.indexOf("<style>"), html.indexOf("</style>"));
+  assert.equal(styles(small), styles(large));
+  // Nested independent loops draw a grid; a 64-iteration inner loop unrolls
+  // inside them (256 cells) instead of nesting 64 steps per cell.
+  const grid = `canvas(40, 40); for (int row = 0; row < 16; row++) { for (int col = 0; col < 16; col++) {
+    int n = 0; for (int i = 0; i < 20; i++) { if (i >= row + col) { break; } n = n + 1; }
+    rect(col * 2, row * 2, 2, 2, n > 15 ? "#000000" : "#0066ff"); } }`;
+  const drawn = evaluateProgram(grid).drawings;
+  assert.equal(drawn.length, 256);
+  assert.deepEqual([drawn[0], drawn[17 * 15]].map(({ x, y, color }) => [x, y, color]), [[0, 0, "#0066ff"], [30, 30, "#000000"]]);
+  assert.equal(siblings(valid(grid).html), 16 + 256);
+  // Carried state keeps nested iterations: outer writes, break, and return.
+  for (const carried of [
+    "int total = 0; for (int i = 0; i < 5; i++) { total = total + i; } print(total);",
+    "for (int i = 0; i < 5; i++) { if (i == 3) { break; } print(i); }",
+    "int f(int n) { for (int i = 0; i < 5; i++) { if (i == n) { return i; } } return -1; } print(f(2));",
+  ]) assert.equal(siblings(valid(carried).html), 0, carried);
+  assert.deepEqual(outputs("int total = 0; for (int i = 0; i < 5; i++) { total = total + i; } print(total);"), [10]);
+  // Siblings bound depth but not size.
+  assert.equal(compile("for (int i = 0; i < 128; i++) { for (int j = 0; j < 128; j++) { print(i + j); } }").ok, false);
+  // The Mandelbrot demo: the set's interior is black, far points escape at once.
+  const mandelbrot = EXAMPLES.find(example => example.id === "mandelbrot")!.source;
+  const cells = evaluateProgram(mandelbrot).drawings;
+  const cell = (col: number, row: number) => cells[row * 32 + col].color;
+  assert.equal(cells.length, 768);
+  // c = 0.85 - 1.15i survives one step (|c|² ≈ 2.05), so it takes the second band.
+  assert.deepEqual([cell(20, 12), cell(0, 0), cell(0, 23), cell(31, 0)], ["#000000", "#ffffff", "#ffffff", "#d6e6ff"]);
+  assert.equal(evaluateProgram(mandelbrot, { iterations: 1 }).drawings.filter(shape => shape.color === "#000000").length > 400, true);
 });
 
 test("drawing captures each execution step and reuses rules across loop iterations", () => {

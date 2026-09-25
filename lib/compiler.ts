@@ -16,9 +16,16 @@ export type PrintedValue = { label: string; choices: PrintChoice[]; selectorId?:
 export type CompilerOptions = { cssFunctions?: boolean; recursionSteps?: number };
 export type Assignment = { id: number; width: string };
 export type StateRule = { id: number; assignments: Assignment[] };
-export type Execution = { kind: "step"; rule: number } | { kind: "print"; printed: number } | { kind: "draw"; drawing: number } | { kind: "repeat"; count: number; odd: Execution[]; even: Execution[] };
+// A repeat nests each iteration in the previous one; an each runs independent
+// iterations as siblings, with the counter set on each iteration element.
+export type Execution = { kind: "step"; rule: number } | { kind: "print"; printed: number } | { kind: "draw"; drawing: number }
+  | { kind: "repeat"; count: number; odd: Execution[]; even: Execution[] }
+  | { kind: "each"; counter: number; values: number[]; body: Execution[] };
 export type NativeFunction = { name: string; parameters: string[]; declarations: string[]; result: string };
-export type Drawing = { kind: "rect" | "circle" | "line"; values: number[]; visible: number; color: string };
+// A dynamic color is a string ID selected from a palette of hex literals.
+export type DrawingColor = string | { nodeId: number; palette: { value: number; color: string }[]; fallback: string };
+// Geometry is a slot ID or constant CSS; an absent visibility slot means always drawn.
+export type Drawing = { kind: "rect" | "circle" | "line"; values: (number | string)[]; visible?: number; color: DrawingColor };
 export type Clock = { id: number; period: number };
 export type Runtime = { nodes: ValueNode[]; rules: StateRule[]; execution: Execution[]; prints: PrintedValue[]; functions: NativeFunction[]; drawings: Drawing[]; clocks: Clock[]; canvas: { width: number; height: number } };
 export type Program = { html: string; variables: number; inputs: number; outputs: number; cssFunctions: boolean };
@@ -59,9 +66,12 @@ const MAX_ITERATIONS = 128;
 const MAX_ARRAY_LENGTH = 32;
 const MAX_NODES = 6_000;
 const MAX_EXPANSION = 30_000;
+const MAX_ELEMENTS = 12_000;
 const TYPES = new Set(["int", "float", "string"]);
 const INPUT_FUNCTIONS = new Set(["input", "click", "press", "arrow_x", "arrow_y", "toggle", "pressed", "hold_time", "typed", "scroll_x", "scroll_y"]);
 const DRAWING_ARITY = new Map<string, number>([["rect", 4], ["circle", 3], ["line", 4]]);
+const HEX_COLOR = /^#(?:[\da-f]{3}|[\da-f]{4}|[\da-f]{6}|[\da-f]{8})$/i;
+const DEFAULT_COLOR = "#000000";
 const FUNCTION_ARITY = new Map([
   ["min", 2], ["max", 2], ["clamp", 3], ["abs", 1], ["sign", 1],
   ["floor", 1], ["ceil", 1], ["round", 1], ["sqrt", 1],
@@ -480,7 +490,7 @@ function truthy(value: string) { return `abs(sign(${value}))`; }
 function booleanWidth(value: string) { return `calc((${value}) * 1px)`; }
 
 type Invoke = (name: string, args: string[], token: Token, guard: string) => string;
-type ExpressionHelpers = { invoke: Invoke; text: (value: string) => number; clock: (period: number) => string };
+type ExpressionHelpers = { invoke: Invoke; ref: (id: number) => string; text: (value: string) => number; clock: (period: number) => string; input: (input: Input, token: Token) => string };
 function lowerExpression(expression: Expression, symbols: Map<string, Binding>, helpers: ExpressionHelpers, depth = 0, guard = "1px"): string {
   if (depth > MAX_DEPTH) throw new CompileError("Split this expression into smaller variables.", expression.token.offset);
   const result = lowerValue(expression, symbols, helpers, depth, guard);
@@ -498,18 +508,21 @@ function lowerValue(expression: Expression, symbols: Map<string, Binding>, helpe
       const binding = symbols.get(expression.name);
       if (!binding) throw new CompileError(`Declare "${expression.name}" before using it.`, expression.token.offset);
       if (binding.array) throw new CompileError(`Index "${expression.name}" to use an element, like ${expression.name}[0].`, expression.token.offset);
-      return binding.constant === undefined ? valueReference(binding.ids[0]) : `${binding.constant}px`;
+      return binding.constant === undefined ? helpers.ref(binding.ids[0]) : `${binding.constant}px`;
     }
     case "index": {
       const binding = symbols.get(expression.name);
       if (!binding) throw new CompileError(`Declare "${expression.name}" before using it.`, expression.token.offset);
       if (!binding.array) throw new CompileError(`"${expression.name}" is not an array.`, expression.token.offset);
       const index = literalIndex(expression.index, binding.ids.length) ?? constantInteger(expression.index, name => symbols.get(name));
-      if (index !== undefined) return index >= 0 && index < binding.ids.length ? valueReference(binding.ids[index]) : "0px";
+      if (index !== undefined) return index >= 0 && index < binding.ids.length ? helpers.ref(binding.ids[index]) : "0px";
       const width = `round(down, ${lower(expression.index)}, 1px)`;
-      return `calc(${binding.ids.map((id, index) => `${equalMask(width, `${index}px`)} * ${valueReference(id)}`).join(" + ")})`;
+      return `calc(${binding.ids.map((id, index) => `${equalMask(width, `${index}px`)} * ${helpers.ref(id)}`).join(" + ")})`;
     }
-    case "input": throw new CompileError('Use input controls directly as top-level numeric initializers, such as int a = input("a");', expression.token.offset);
+    case "input":
+      // Page inputs are invisible and shared, so any read can use one hoisted slot.
+      if (expression.input.global) return helpers.input(expression.input, expression.token);
+      throw new CompileError('Use labeled inputs directly as top-level numeric initializers, such as int a = input("a");', expression.token.offset);
     case "unary": {
       const value = lower(expression.operand);
       if (expression.operator === "!") return booleanWidth(`1 - ${truthy(value)}`);
@@ -612,7 +625,8 @@ function literalIndex(expression: Expression, size: number): number | undefined 
 // per element. Scope forks may share a binding until an assignment replaces it.
 type Binding = { ids: number[]; type?: ValueType; array?: boolean; readonly?: boolean; constant?: number };
 type Scope = Map<string, Binding>;
-type Context = { scopes: Scope[]; fn?: FunctionDefinition; loops?: number[]; guard?: string; tailIndex?: number };
+// parallel counts the sibling iterations that repeat this code's DOM.
+type Context = { scopes: Scope[]; fn?: FunctionDefinition; loops?: number[]; guard?: string; tailIndex?: number; parallel?: number };
 enum Flow { Next = 1, Return = 2, Break = 4, Continue = 8 }
 
 // Only fold small integer index arithmetic. Other math retains CSS semantics.
@@ -635,11 +649,14 @@ function constantInteger(expression: Expression, binding: (name: string) => Bind
   return value !== undefined && Number.isInteger(value) && Math.abs(value) <= MAX_VALUE ? value : undefined;
 }
 
-// Specialize short computational loops when their counter indexes an array.
-// This removes per-element selection masks and lets an enclosing phase fuse
-// the whole loop. Effects and nested loops keep the reusable backend.
-function specializeArrayLoop(statement: Extract<Statement, { kind: "for" }>, count: number): boolean {
-  if (statement.tail || count > 8) return false;
+// Unroll short computational loops: up to 8 iterations when the counter
+// indexes an array, which also removes per-element selection masks, or up to
+// 4 otherwise. An enclosing phase can then fuse the whole loop instead of
+// nesting steps per iteration. Effects and nested loops keep the reusable backend.
+// Inside sibling iterations the DOM repeats per iteration but CSS is shared,
+// so longer loops unroll there: up to 32 iterations of a larger body.
+function unrollLoop(statement: Extract<Statement, { kind: "for" }>, count: number, parallel = false): boolean {
+  if (statement.tail || count > (parallel ? 32 : 8)) return false;
   let indexed = false;
   let work = 0;
   const usesCounter = (value: Expression): boolean => {
@@ -661,12 +678,12 @@ function specializeArrayLoop(statement: Extract<Statement, { kind: "for" }>, cou
       case "binary": return expression(value.left) && expression(value.right);
       case "conditional": return expression(value.condition) && expression(value.yes) && expression(value.no);
       case "call": return FUNCTION_ARITY.has(value.name) && value.args.every(expression);
-      case "input": return false;
+      case "input": return value.input.global === true;
       default: return true;
     }
   };
   const body = (statements: Statement[]): boolean => statements.every(item => {
-    if (++work * count > 64) return false;
+    if (++work * count > (parallel ? 256 : 64)) return false;
     switch (item.kind) {
       case "declare": return item.name.value !== statement.name.value && expression(item.expression);
       case "return": return expression(item.expression);
@@ -677,7 +694,45 @@ function specializeArrayLoop(statement: Extract<Statement, { kind: "for" }>, cou
       default: return false;
     }
   });
-  return body(statement.body) && indexed;
+  return body(statement.body) && (indexed || parallel || count <= 4);
+}
+
+// Iterations are independent when the body only assigns its own locals and
+// cannot break out of this loop, return, or call a user function while
+// recursion can raise the shared failure flag. They can then run as siblings:
+// DOM depth stays constant, and the body's rules are compiled once.
+function independentLoop(statement: Extract<Statement, { kind: "for" }>, recursion: boolean): boolean {
+  if (statement.tail) return false;
+  let independent = true;
+  const expression = (value: Expression): void => {
+    switch (value.kind) {
+      case "call": if (recursion && !FUNCTION_ARITY.has(value.name)) independent = false; value.args.forEach(expression); break;
+      case "index": expression(value.index); break;
+      case "unary": expression(value.operand); break;
+      case "binary": expression(value.left); expression(value.right); break;
+      case "conditional": expression(value.condition); expression(value.yes); expression(value.no); break;
+    }
+  };
+  const block = (statements: Statement[], declared: Set<string>, nested: boolean): void => {
+    const locals = new Set(declared);
+    for (const item of statements) switch (item.kind) {
+      case "declare": expression(item.expression); locals.add(item.name.value); break;
+      case "array": item.values.forEach(expression); locals.add(item.name.value); break;
+      case "assign":
+        if (!locals.has(item.name.value)) independent = false;
+        if (item.index) expression(item.index);
+        expression(item.expression);
+        break;
+      case "if": expression(item.condition); block(item.yes, locals, nested); block(item.no, locals, nested); break;
+      case "for": block(item.body, new Set([...locals, item.name.value]), true); break;
+      case "break": if (!nested) independent = false; break;
+      case "return": independent = false; break;
+      case "print": case "call": expression(item.expression); break;
+      case "draw": item.args.forEach(expression); break;
+    }
+  };
+  block(statement.body, new Set([statement.name.value]), false);
+  return independent;
 }
 
 class Lowerer {
@@ -693,6 +748,9 @@ class Lowerer {
   private strings = [""];
   private clocks: Clock[] = [];
   private drawings: Drawing[] = [];
+  // Slots from add() are written exactly once (loop banks use reserve()), so a
+  // literal slot can be read as its value. Reads then fold and outputs inline.
+  private literals = new Map<number, string>();
   private canvas = { width: 320, height: 240 };
   private hasCanvas = false;
   private recursive = new Set<string>();
@@ -726,8 +784,12 @@ class Lowerer {
     const drawingCount = this.drawings.length;
     const printCount = this.prints.length;
     try { this.capture(action); }
-    finally { this.nodes.length = nodeCount; this.rules.length = ruleCount; this.drawings.length = drawingCount; this.prints.length = printCount; }
+    finally {
+      this.nodes.length = nodeCount; this.rules.length = ruleCount; this.drawings.length = drawingCount; this.prints.length = printCount;
+      for (const id of this.literals.keys()) if (id >= nodeCount) this.literals.delete(id);
+    }
   }
+  private ref(id: number) { return this.literals.get(id) ?? valueReference(id); }
   private assign(id: number, width: string) {
     this.sequence.pending.push({ id, width: storedWidth(width, this.nodes[id].type) });
   }
@@ -741,7 +803,13 @@ class Lowerer {
   private add(name: string, width: string, token: Token, type: ValueType = "int", input?: ValueNode["input"]): number {
     const id = this.reserve(name, token, type);
     this.nodes[id] = { id, name, width: storedWidth(width, type), type, ...(input ? { input } : {}) };
-    if (!input) this.assign(id, width);
+    if (input) return id;
+    this.assign(id, width);
+    if (/^-?\d+(?:\.\d+)?(?:e[+-]?\d+)?px$/i.test(width)) {
+      // Mirror storedWidth(): integers truncate, strings are non-negative IDs.
+      const value = type === "float" ? parseFloat(width) : Math.trunc(parseFloat(width));
+      this.literals.set(id, `${Math.max(type === "string" ? 0 : -MAX_VALUE, Math.min(MAX_VALUE, value))}px`);
+    }
     return id;
   }
   private compatible(actual: ValueType, expected: ValueType, token: Token) {
@@ -757,7 +825,7 @@ class Lowerer {
     switch (expression.kind) {
       case "number": return /[.eE]/.test(expression.token.value) ? "float" : "int";
       case "string": return "string";
-      case "input": return "float";
+      case "input": return ["toggle", "pressed", "typed"].includes(expression.input.kind) ? "int" : "float";
       case "reference": case "index": {
         const binding = this.find({ ...expression.token, value: expression.name }, context).get(expression.name)!;
         if (expression.kind === "index") {
@@ -811,11 +879,12 @@ class Lowerer {
     const symbols = new Map<string, Binding>();
     for (const scope of context.scopes) for (const [name, binding] of scope) symbols.set(name, binding);
     return lowerExpression(expression, symbols, {
+      ref: id => this.ref(id),
       invoke: (name, args, token, guard) => {
         // An earlier call in the same expression may have exhausted its budget.
         const failed = context.scopes[0].get("#failed")?.ids[0];
         return this.invoke(name, args, token, failed === undefined ? guard
-          : combineGuard(guard, booleanWidth(`1 - ${truthy(valueReference(failed))}`)), context);
+          : combineGuard(guard, booleanWidth(`1 - ${truthy(this.ref(failed))}`)), context);
       },
       text: value => this.strings.indexOf(value),
       clock: period => {
@@ -823,13 +892,29 @@ class Lowerer {
         if (!clock) { clock = { id: this.clocks.length, period }; this.clocks.push(clock); }
         return `var(--clock-${clock.id})`;
       },
+      input: (input, token) => {
+        if (context.fn) throw new CompileError("Read inputs outside functions, then pass them in as arguments.", token.offset);
+        return this.ref(this.pageInput(input, token));
+      },
     }, 0, this.outputActive(context));
+  }
+  // Every read of the same page input shares one slot, including a declared one.
+  private pageInput(input: Input, token: Token): number {
+    const binary = input.kind === "toggle" || input.kind === "pressed";
+    const type: ValueType = binary ? "int" : "float";
+    const key = JSON.stringify(input);
+    const existing = this.nodes.find(node => node.input && (binary || node.type === type) && JSON.stringify(node.input) === key);
+    return existing?.id ?? this.add(input.kind === "toggle" ? "click" : input.kind === "pressed" ? "press" : input.kind, "0px", token, type, input);
   }
   private initialize(name: string, expression: Expression | undefined, token: Token, context: Context, type: ValueType): number {
     if (!expression) return this.add(name, "0px", token, type);
     if (expression.kind === "input") {
       this.compatible("float", type, token);
-      if (context.fn || context.scopes.length !== 1) throw new CompileError("Declare inputs at the top level, outside functions and blocks.", expression.token.offset);
+      if (context.fn) throw new CompileError("Read inputs outside functions, then pass them in as arguments.", expression.token.offset);
+      if (context.scopes.length !== 1) {
+        if (!expression.input.global) throw new CompileError("Declare labeled inputs at the top level, outside blocks.", expression.token.offset);
+        return this.add(name, this.value(expression, context, type), token, type);
+      }
       const input = expression.input;
       if (input.kind === "slider" && type === "int" && ![input.initial, input.maximum, input.minimum].every(Number.isInteger)) throw new CompileError("Use a float input for fractional initial values or bounds.", expression.token.offset);
       const initial = input.kind === "slider" ? input.initial : input.kind === "toggle" ? Number(input.initial) : 0;
@@ -847,9 +932,9 @@ class Lowerer {
         // Select a source branch, not an enumerated input value. The numeric
         // fallback remains a live calculation, just like an ordinary print.
         const condition = this.add("output condition", booleanWidth(truthy(this.value(value.condition, branch))), value.token);
-        const yes = select(value.yes, { ...branch, guard: combineGuard(branch.guard ?? "1px", valueReference(condition)) });
-        const no = select(value.no, { ...branch, guard: combineGuard(branch.guard ?? "1px", booleanWidth(`1 - ${truthy(valueReference(condition))}`)) });
-        return valueReference(this.add("output choice", selectWidth(valueReference(condition), yes, no), value.token));
+        const yes = select(value.yes, { ...branch, guard: combineGuard(branch.guard ?? "1px", this.ref(condition)) });
+        const no = select(value.no, { ...branch, guard: combineGuard(branch.guard ?? "1px", booleanWidth(`1 - ${truthy(this.ref(condition))}`)) });
+        return this.ref(this.add("output choice", selectWidth(this.ref(condition), yes, no), value.token));
       }
       if (value.kind === "string") choices.push({ text: value.value });
       else {
@@ -884,8 +969,8 @@ class Lowerer {
       ...(context.loops ?? []).map(index => context.scopes[index].get("#iteration")!.ids[0]),
     ];
     const failed = context.scopes[0].get("#failed")?.ids[0];
-    const running = !ids.length ? "1px" : ids.length === 1 ? valueReference(ids[0]) : booleanWidth(ids.map(id => truthy(valueReference(id))).join(" * "));
-    return failed === undefined ? running : combineGuard(running, booleanWidth(`1 - ${truthy(valueReference(failed))}`));
+    const running = !ids.length ? "1px" : ids.length === 1 ? this.ref(ids[0]) : booleanWidth(ids.map(id => truthy(this.ref(id))).join(" * "));
+    return failed === undefined ? running : combineGuard(running, booleanWidth(`1 - ${truthy(this.ref(failed))}`));
   }
   private outputActive(context: Context): string {
     return combineGuard(context.guard ?? "1px", this.active(context));
@@ -939,15 +1024,15 @@ class Lowerer {
           ?? constantInteger(statement.index, name => context.scopes.findLast(scope => scope.has(name))?.get(name)) : 0;
         // Snapshot the signed index before evaluating and applying the write.
         const selector = index === undefined
-          ? valueReference(this.add("array index", `round(down, ${this.value(statement.index!, context)}, 1px)`, statement.name))
+          ? this.ref(this.add("array index", `round(down, ${this.value(statement.index!, context)}, 1px)`, statement.name))
           : undefined;
         const type = binding.type ?? "int";
         const width = this.value(statement.expression, context, type);
-        const next = selector ? valueReference(this.add("array value", width, statement.name, type)) : width;
+        const next = selector ? this.ref(this.add("array value", width, statement.name, type)) : width;
         const active = context.fn || context.loops?.length ? this.active(context) : undefined;
         const ids = binding.ids.map((id, element) => {
           if (index !== undefined && element !== index) return id;
-          const previous = valueReference(id);
+          const previous = this.ref(id);
           const selected = selector ? selectWidth(booleanWidth(equalMask(selector, `${element}px`)), next, previous) : next;
           const guarded = active ? selectWidth(active, selected, previous) : selected;
           return this.add(binding.array ? `${statement.name.value}[${element}]` : statement.name.value, guarded, statement.name, type);
@@ -960,8 +1045,8 @@ class Lowerer {
         const condition = this.add("condition", booleanWidth(truthy(this.value(statement.condition, context))), statement.token);
         const yes = this.fork(context);
         const no = this.fork(context);
-        yes.guard = combineGuard(context.guard ?? "1px", valueReference(condition));
-        no.guard = combineGuard(context.guard ?? "1px", booleanWidth(`1 - ${truthy(valueReference(condition))}`));
+        yes.guard = combineGuard(context.guard ?? "1px", this.ref(condition));
+        no.guard = combineGuard(context.guard ?? "1px", booleanWidth(`1 - ${truthy(this.ref(condition))}`));
         const yesReturns = this.block(statement.yes, yes);
         const noReturns = this.block(statement.no, no);
         for (const [index, scope] of context.scopes.entries()) {
@@ -969,7 +1054,7 @@ class Lowerer {
             const a = yes.scopes[index].get(name)!;
             const b = no.scopes[index].get(name)!;
             const ids = a.ids.map((id, element) => id === b.ids[element] ? id : this.add(name,
-              selectWidth(valueReference(condition), valueReference(id), valueReference(b.ids[element])), statement.token, binding.type));
+              selectWidth(this.ref(condition), this.ref(id), this.ref(b.ids[element])), statement.token, binding.type));
             scope.set(name, { ...binding, ids });
           }
         }
@@ -989,11 +1074,11 @@ class Lowerer {
         const parentLoops = context.loops;
         const controlIndex = context.scopes.length;
         this.loopScope(context, statement.token);
-        if (specializeArrayLoop(statement, count)) {
+        if (unrollLoop(statement, count, (context.parallel ?? 1) >= 16)) {
           let flow = 0;
           for (let i = 0; i < count; i++) {
             const control = context.scopes[controlIndex];
-            control.set("#iteration", { ids: [this.add("iteration active", valueReference(control.get("#running")!.ids[0]), statement.token)] });
+            control.set("#iteration", { ids: [this.add("iteration active", this.ref(control.get("#running")!.ids[0]), statement.token)] });
             const constant = statement.start + i * statement.step;
             context.scopes.push(new Map([[statement.name.value, {
               ids: [this.add(statement.name.value, `${constant}px`, statement.name)], readonly: true, constant,
@@ -1005,6 +1090,24 @@ class Lowerer {
           context.loops = parentLoops;
           return (flow & Flow.Return) | (flow & (Flow.Next | Flow.Break | Flow.Continue) ? Flow.Next : 0);
         }
+        if (independentLoop(statement, this.recursive.size > 0)) {
+          // Each iteration reads the state before the loop and its own counter,
+          // which the runtime sets on the iteration's element.
+          const counter = this.reserve(statement.name.value, statement.name);
+          this.flush();
+          const body = this.capture(() => {
+            const iteration: Context = { ...context, scopes: context.scopes.map(scope => new Map(scope)), parallel: (context.parallel ?? 1) * count };
+            const control = iteration.scopes[controlIndex];
+            control.set("#iteration", { ids: [this.add("iteration active", this.ref(control.get("#running")!.ids[0]), statement.token)] });
+            iteration.scopes.push(new Map([[statement.name.value, { ids: [counter], readonly: true }]]));
+            return this.block(statement.body, iteration);
+          });
+          const values = Array.from({ length: count }, (_, index) => statement.start + index * statement.step);
+          this.sequence.execution.push({ kind: "each", counter, values, body: body.execution });
+          context.scopes.pop();
+          context.loops = parentLoops;
+          return (body.result & Flow.Return) | (body.result & (Flow.Next | Flow.Break | Flow.Continue) ? Flow.Next : 0);
+        }
         // Two banks let a step read inherited state while writing the other bank.
         // Every declaration and selector is compiled twice, regardless of count.
         const banks = [0, 1].map(() => context.scopes.map(scope => new Map(
@@ -1012,7 +1115,7 @@ class Lowerer {
         )));
         const counters = [this.reserve(statement.name.value, statement.name), this.reserve(statement.name.value, statement.name)];
         for (const [index, scope] of context.scopes.entries()) {
-          for (const [name, binding] of scope) binding.ids.forEach((id, element) => this.assign(banks[0][index].get(name)!.ids[element], valueReference(id)));
+          for (const [name, binding] of scope) binding.ids.forEach((id, element) => this.assign(banks[0][index].get(name)!.ids[element], this.ref(id)));
         }
         this.assign(counters[0], `${statement.start}px`);
         this.flush();
@@ -1020,13 +1123,13 @@ class Lowerer {
           const iteration: Context = { ...context, scopes: banks[from].map(scope => new Map(scope)), ...(statement.tail ? { tailIndex: controlIndex } : {}) };
           // Continue resets for each iteration; break persists across iterations.
           const control = iteration.scopes[controlIndex];
-          control.set("#iteration", { ids: [this.add("iteration active", valueReference(control.get("#running")!.ids[0]), statement.token)] });
+          control.set("#iteration", { ids: [this.add("iteration active", this.ref(control.get("#running")!.ids[0]), statement.token)] });
           iteration.scopes.push(new Map([[statement.name.value, { ids: [counters[from]], readonly: true }]]));
           const returns = this.block(statement.body, iteration);
           for (const [index, scope] of banks[to].entries()) {
-            for (const [name, binding] of scope) binding.ids.forEach((id, element) => this.assign(id, valueReference(iteration.scopes[index].get(name)!.ids[element])));
+            for (const [name, binding] of scope) binding.ids.forEach((id, element) => this.assign(id, this.ref(iteration.scopes[index].get(name)!.ids[element])));
           }
-          this.assign(counters[to], `calc(${valueReference(counters[from])} + ${statement.step}px)`);
+          this.assign(counters[to], `calc(${this.ref(counters[from])} + ${statement.step}px)`);
           return returns;
         });
         const odd = phase(0, 1);
@@ -1048,10 +1151,10 @@ class Lowerer {
         const scope = context.scopes[index];
         const active = this.active(context);
         if (statement.kind === "break") {
-          const previous = valueReference(scope.get("#running")!.ids[0]);
+          const previous = this.ref(scope.get("#running")!.ids[0]);
           scope.set("#running", { ids: [this.add("break", selectWidth(active, "0px", previous), statement.token)] });
         }
-        const previous = valueReference(scope.get("#iteration")!.ids[0]);
+        const previous = this.ref(scope.get("#iteration")!.ids[0]);
         scope.set("#iteration", { ids: [this.add(statement.kind, selectWidth(active, "0px", previous), statement.token)] });
         return statement.kind === "break" ? Flow.Break : Flow.Continue;
       }
@@ -1075,11 +1178,11 @@ class Lowerer {
             context.fn.params.forEach((param, index) => {
               const previous = scope.get(param.name.value)!;
               scope.set(param.name.value, { ...previous, ids: [this.add(param.name.value,
-                selectWidth(active, valueReference(args[index]), valueReference(previous.ids[0])), param.name, param.type)] });
+                selectWidth(active, this.ref(args[index]), this.ref(previous.ids[0])), param.name, param.type)] });
             });
             const control = context.scopes[context.tailIndex];
             const previous = control.get("#iteration")!;
-            control.set("#iteration", { ids: [this.add("tail call", selectWidth(active, "0px", valueReference(previous.ids[0])), expression.token)] });
+            control.set("#iteration", { ids: [this.add("tail call", selectWidth(active, "0px", this.ref(previous.ids[0])), expression.token)] });
             return Flow.Return;
           }
         }
@@ -1088,8 +1191,8 @@ class Lowerer {
         const previous = scope.get("#return")!.ids[0];
         const type = context.fn.type;
         const value = this.value(statement.expression, context, type);
-        scope.set("#return", { ids: [this.add("return", selectWidth(this.active(context), value, valueReference(previous)), statement.token, type)], type });
-        scope.set("#alive", { ids: [this.add("returned", selectWidth(this.active(context), "0px", valueReference(alive)), statement.token)] });
+        scope.set("#return", { ids: [this.add("return", selectWidth(this.active(context), value, this.ref(previous)), statement.token, type)], type });
+        scope.set("#alive", { ids: [this.add("returned", selectWidth(this.active(context), "0px", this.ref(alive)), statement.token)] });
         return Flow.Return;
       }
       case "print": {
@@ -1124,18 +1227,42 @@ class Lowerer {
       }
       case "draw": {
         const count = DRAWING_ARITY.get(statement.shape)!;
-        const color = statement.args[count];
-        if (color && (color.kind !== "string" || !/^#(?:[\da-f]{3}|[\da-f]{4}|[\da-f]{6}|[\da-f]{8})$/i.test(color.value))) throw new CompileError('Use a literal hex color, such as "#9fe870".', color.token.offset);
-        const values = statement.args.slice(0, count).map(arg => this.add(statement.shape, this.value(arg, context), arg.token, "float"));
-        const visible = this.add("draw active", booleanWidth(truthy(this.outputActive(context))), statement.token);
+        // Var-free geometry is constant CSS: write it into the shape rule directly.
+        const values = statement.args.slice(0, count).map(arg => {
+          const width = this.value(arg, context);
+          if (width.includes("var(")) return this.add(statement.shape, width, arg.token, "float");
+          return /^-?[\d.]+(?:e[+-]?\d+)?px$/i.test(width) ? width : storedWidth(width, "float");
+        });
+        const color = statement.args[count] ? this.color(statement.args[count], context) : DEFAULT_COLOR;
+        const active = this.outputActive(context);
+        const visible = active === "1px" ? undefined : this.add("draw active", booleanWidth(truthy(active)), statement.token);
         const drawing = this.drawings.length;
-        this.drawings.push({ kind: statement.shape, values, visible, color: color?.kind === "string" ? color.value : "#d7ddcc" });
+        this.drawings.push({ kind: statement.shape, values, visible, color });
         // Emit at this state snapshot, before a later iteration reuses its slots.
         this.flush();
         this.sequence.execution.push({ kind: "draw", drawing });
         return Flow.Next;
       }
     }
+  }
+  // A literal color stays static CSS. Any other string expression stores its
+  // string ID, and the runtime selects the matching hex literal with color-mix().
+  private color(expression: Expression, context: Context): DrawingColor {
+    const invalid = (token: Token) => new CompileError('Use a hex color string, such as "#0066ff".', token.offset);
+    if (this.expressionType(expression, context) !== "string") throw invalid(expression.token);
+    const leaves = (value: Expression): Expression[] => value.kind === "conditional" ? [...leaves(value.yes), ...leaves(value.no)] : [value];
+    const all = leaves(expression);
+    const literals = all.flatMap(leaf => leaf.kind === "string" ? [leaf] : []);
+    for (const leaf of literals) if (!HEX_COLOR.test(leaf.value)) throw invalid(leaf.token);
+    if (expression.kind === "string") return expression.value;
+    const nodeId = this.add("color", this.value(expression, context, "string"), expression.token, "string");
+    // A tree of literals can only select one of its leaves, so its last color
+    // needs no test. Other strings can hold any literal, or a non-color.
+    const closed = literals.length === all.length;
+    const colors = closed ? [...new Set(literals.map(leaf => leaf.value))] : this.strings.filter(text => HEX_COLOR.test(text));
+    const fallback = closed ? colors.pop()! : DEFAULT_COLOR;
+    if (!colors.length) return fallback;
+    return { nodeId, fallback, palette: colors.map(color => ({ value: this.strings.indexOf(color), color })) };
   }
   // Functions that loop, recurse, print, or draw, and their callers, use DOM state.
   private canUseNative(name: string, visiting = new Set<string>()): boolean {
@@ -1205,9 +1332,9 @@ class Lowerer {
     scope.set("#return", { ids: [this.add("result", "0px", token, fn.type)], type: fn.type });
     if (this.recursive.size) {
       const previous = caller?.scopes[0].get("#failed")?.ids[0];
-      scope.set("#failed", { ids: [this.add("runtime failure", previous === undefined ? "0px" : valueReference(previous), token)] });
+      scope.set("#failed", { ids: [this.add("runtime failure", previous === undefined ? "0px" : this.ref(previous), token)] });
     }
-    const context: Context = { scopes: [scope], fn, guard };
+    const context: Context = { scopes: [scope], fn, guard, parallel: caller?.parallel };
     let flow: Flow;
     if (this.recursive.has(name)) {
       // The generated loop adds a fresh scope per call. Retain the original
@@ -1222,12 +1349,12 @@ class Lowerer {
       const printed = this.prints.length;
       this.prints.push({ label: "Runtime error", choices: [{ text: `Recursion limit reached in ${name} (${this.recursionSteps} calls).` }], visible: exhausted, error: true });
       this.sequence.execution.push({ kind: "print", printed });
-      scope.set("#failed", { ids: [this.add("runtime failure", `max(${valueReference(scope.get("#failed")!.ids[0])}, ${valueReference(exhausted)})`, token)] });
+      scope.set("#failed", { ids: [this.add("runtime failure", `max(${this.ref(scope.get("#failed")!.ids[0])}, ${this.ref(exhausted)})`, token)] });
     } else flow = this.block(fn.body, context, false);
     if (flow !== Flow.Return) throw new CompileError(`Function "${name}" must return a value on every path.`, fn.name.offset);
     if (caller && this.recursive.size) caller.scopes[0].set("#failed", scope.get("#failed")!);
     this.callStack.pop();
-    return valueReference(scope.get("#return")!.ids[0]);
+    return this.ref(scope.get("#return")!.ids[0]);
   }
   lower(statements: Statement[]): Program {
     // A loop can print a string assigned later in its body, on the next pass.
@@ -1247,7 +1374,8 @@ class Lowerer {
         case "function": case "for": intern(statement.body); break;
         case "if": text(statement.condition); intern(statement.yes); intern(statement.no); break;
         case "array": statement.values.forEach(text); break;
-        case "draw": statement.args.slice(0, DRAWING_ARITY.get(statement.shape)!).forEach(text); break;
+        // A literal color is static CSS; only a computed color needs string IDs.
+        case "draw": statement.args.forEach((arg, index) => { if (index < DRAWING_ARITY.get(statement.shape)! || arg.kind !== "string") text(arg); }); break;
         case "assign": if (statement.index) text(statement.index); text(statement.expression); break;
         case "declare": case "print": case "return": case "call": text(statement.expression); break;
       }
@@ -1289,14 +1417,40 @@ class Lowerer {
       this.probe(() => { this.invoke(name, fn.params.map(() => "1px"), fn.name); });
     }
     this.flush();
-    const count = (execution: Execution[], kind: "step" | "draw" | "print"): number => execution.reduce((sum, step) => {
+    const count = (execution: Execution[], kind: "draw" | "print"): number => execution.reduce((sum, step) => {
       if (step.kind === "repeat") return sum + Math.ceil(step.count / 2) * count(step.odd, kind) + Math.floor(step.count / 2) * count(step.even, kind);
+      if (step.kind === "each") return sum + step.values.length * count(step.body, kind);
       if (step.kind !== kind || (step.kind === "print" && this.prints[step.printed].error)) return sum;
       return sum + 1;
     }, 0);
+    // Steps stay open to the end of their parent, so a sequence of steps nests.
+    // Sibling iterations close theirs. HTML parsers flatten deeper trees.
+    const depth = (execution: Execution[]): { open: number; peak: number } => {
+      let open = 0, peak = 0;
+      for (const step of execution) {
+        if (step.kind === "step") peak = Math.max(peak, ++open);
+        else if (step.kind === "each") peak = Math.max(peak, open + 1 + depth(step.body).peak);
+        else if (step.kind === "repeat") {
+          const odd = depth(step.odd), even = depth(step.even);
+          const odds = Math.ceil(step.count / 2), evens = Math.floor(step.count / 2);
+          // The deepest point is within the last odd or the last even iteration.
+          peak = Math.max(peak, open + (odds - 1) * (odd.open + even.open) + odd.peak);
+          if (evens) peak = Math.max(peak, open + evens * odd.open + (evens - 1) * even.open + even.peak);
+          open += odds * odd.open + evens * even.open;
+        }
+      }
+      return { open, peak };
+    };
     const inputs = this.nodes.filter(node => node.input).length;
     const inputLayers = this.nodes.filter(node => node.input?.kind === "slider").length * 2 + Number(this.nodes.some(node => node.input?.kind === "scroll" || node.input?.kind === "hold_time"));
-    if (count(this.sequence.execution, "step") + inputLayers > 480) throw new CompileError("This program needs too many nested execution steps for HTML. Reduce loop bounds or nesting.", 0);
+    if (depth(this.sequence.execution).peak + inputLayers > 480) throw new CompileError("This program needs too many nested execution steps for HTML. Reduce loop bounds or nesting.", 0);
+    // Sibling iterations bound depth, not size: also bound the elements emitted.
+    const elements = (execution: Execution[]): number => execution.reduce((sum, step) => {
+      if (step.kind === "repeat") return sum + Math.ceil(step.count / 2) * elements(step.odd) + Math.floor(step.count / 2) * elements(step.even);
+      if (step.kind === "each") return sum + step.values.length * (1 + elements(step.body));
+      return sum + 1;
+    }, 0);
+    if (elements(this.sequence.execution) > MAX_ELEMENTS) throw new CompileError(`This program generates more than ${MAX_ELEMENTS.toLocaleString("en-US")} HTML elements. Reduce loop bounds.`, 0);
     return {
       html: renderDocument({ nodes: this.nodes, rules: this.rules, execution: this.sequence.execution, prints: this.prints, functions: [...this.native.values()], drawings: this.drawings, clocks: this.clocks, canvas: this.canvas }),
       variables: [...context.scopes[0].keys()].filter(name => !name.startsWith("#")).length,
