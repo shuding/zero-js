@@ -33,6 +33,13 @@ export function Playground() {
   const gutter = useRef<HTMLDivElement>(null);
   const highlight = useRef<HTMLPreElement>(null);
   const lines = state.source.split("\n").length;
+  const [cursor, setCursor] = useState({ line: 1, column: 1 });
+  const outputKb = (new Blob([state.program.html]).size / 1024).toFixed(1);
+
+  function trackCursor(target: HTMLTextAreaElement) {
+    const before = target.value.slice(0, target.selectionStart);
+    setCursor({ line: before.split("\n").length, column: before.length - before.lastIndexOf("\n") });
+  }
 
   useEffect(() => { edit({ functionsSupported: supportsCssFunctions() }); }, []);
 
@@ -40,7 +47,7 @@ export function Playground() {
     const url = URL.createObjectURL(new Blob([state.program.html], { type: "text/html" }));
     const link = document.createElement("a");
     link.href = url;
-    link.download = "css-lang-output.html";
+    link.download = "zero-js-output.html";
     link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
@@ -54,15 +61,16 @@ export function Playground() {
 
   return (
     <main className="app-shell">
-      <header className="site-header">
-        <h1>css-lang</h1>
-        <p>A C-like language that compiles to standalone HTML and CSS — no JavaScript, just CSS calculations that update live.</p>
+      <header className="topbar">
+        <h1 className="brand">zero-js<span className="brand-cursor" aria-hidden="true" /></h1>
+        <p className="tagline">A C-like language that compiles to plain HTML and CSS, so every program runs with zero bytes of JavaScript.</p>
+        <span className="js-meter" title="JavaScript in the compiled output"><span className="sr-only">JavaScript in output: </span><span aria-hidden="true">js </span>0 B</span>
       </header>
       <div className="workspace">
-        <section className="editor-pane" aria-labelledby="source-heading">
+        <section className="panel editor-pane" aria-labelledby="source-heading">
           <div className="pane-toolbar editor-toolbar">
-            <div className="pane-title"><h2 id="source-heading">Source</h2></div>
-            <label className="example-picker"><span className="sr-only">Example program</span><select value={example} onChange={event => {
+            <h2 id="source-heading" className="panel-title">source<span>.zjs</span></h2>
+            <label className="example-picker"><span className="picker-label">example</span><select value={example} onChange={event => {
               const selected = EXAMPLES.find(item => item.id === event.target.value);
               if (!selected) return;
               setExample(selected.id);
@@ -78,10 +86,10 @@ export function Playground() {
             <div className="line-numbers" ref={gutter} aria-hidden="true">{Array.from({ length: lines }, (_, index) => <div className={state.error?.line === index + 1 ? "error-line" : ""} key={index}>{index + 1}</div>)}</div>
             <div className="source-editor">
             <SyntaxHighlight ref={highlight} source={state.source} />
-            <textarea ref={editor} className="source-input" aria-label="css-lang source code" aria-describedby="editor-help compile-status" aria-invalid={state.error !== null} value={state.source} spellCheck={false} autoCapitalize="off" autoCorrect="off" wrap="off" onChange={event => {
+            <textarea ref={editor} className="source-input" aria-label="zero-js source code" aria-describedby="editor-help compile-status" aria-invalid={state.error !== null} value={state.source} spellCheck={false} autoCapitalize="off" autoCorrect="off" wrap="off" onChange={event => {
               setExample("custom");
               edit({ source: event.target.value });
-            }} onScroll={event => {
+            }} onSelect={event => trackCursor(event.currentTarget)} onScroll={event => {
               if (gutter.current) gutter.current.scrollTop = event.currentTarget.scrollTop;
               if (highlight.current) {
                 highlight.current.scrollTop = event.currentTarget.scrollTop;
@@ -115,17 +123,17 @@ export function Playground() {
               <div><code>{"for (int i = 0; i < 30; i++) { a = a + i; }"}</code><p>Iterations reuse CSS state and rules through nested HTML. Use literal bounds, &lt; or &lt;=, and i++ or i = i + a positive literal. Maximum 128 iterations per loop; total nesting is bounded.</p></div>
               <div><code>{"if (i >= n) { break; }"}</code><p>break exits the nearest loop; continue skips the rest of its current iteration. Both use CSS state masks, so generated steps remain bounded by the loop's literal limit.</p></div>
               <div><code>{'print(n % 3 == 0 ? "Fizz" : n);'}</code><p>Print numbers, strings, or arrays inside functions, conditionals, and loops. Each call captures its current value; rows follow execution order and skipped calls take no space. Prints respect break, continue, and return. Conditional output can mix numbers and text.</p></div>
-              <div><code>{'canvas(320, 240); circle(x, y, 8, "#647a55");'}</code><p>Draw with rect(x, y, width, height), circle(centerX, centerY, radius), and line(x1, y1, x2, y2), including inside functions, if blocks, and loops. Shapes capture coordinates at each call and respect break, continue, and return. Each accepts an optional literal hex color. Coordinates are pixels; canvas dimensions are literals.</p></div>
+              <div><code>{'canvas(320, 240); circle(x, y, 8, "#9fe870");'}</code><p>Draw with rect(x, y, width, height), circle(centerX, centerY, radius), and line(x1, y1, x2, y2), including inside functions, if blocks, and loops. Shapes capture coordinates at each call and respect break, continue, and return. Each accepts an optional literal hex color. Coordinates are pixels; canvas dimensions are literals.</p></div>
               <div><code>float t = time(8);</code><p>A CSS clock counts seconds from 0 to 8, then repeats. time() defaults to 60 seconds. Each frame recomputes the program; variables do not persist between frames. Use Pause to stop motion.</p></div>
               <p className="language-note">CSS controls numeric precision. A live zero divisor produces 0; sqrt clamps negative inputs to 0. Keep input and canvas at the top level; input can directly initialize an array element. Functions accept and return scalar values, not whole arrays. Call a function as a statement to discard its return value.</p>
             </div>
           </details>
         </section>
 
-        <section className="preview-pane" aria-labelledby="preview-heading">
+        <section className="panel preview-pane" aria-labelledby="preview-heading">
           <div className="pane-toolbar preview-toolbar">
-            <div className="pane-title"><h2 id="preview-heading">Compiler HTML+CSS</h2></div>
-            <div className="preview-actions"><button onClick={() => setShowSource(value => !value)} aria-pressed={showSource} title="Inspect the compiled document">{showSource ? "Preview" : "HTML / CSS"}</button><button className="reset-button" onClick={() => setRevision(value => value + 1)} title="Reset resized inputs" aria-label="Reset resized inputs">↻</button></div>
+            <h2 id="preview-heading" className="panel-title">output<span>.html</span></h2>
+            <div className="preview-actions"><button className="tui-button" onClick={() => setShowSource(value => !value)} aria-pressed={showSource} title="Inspect the compiled document">view source</button><button className="tui-button" onClick={() => setRevision(value => value + 1)} title="Reset inputs to their initial values">reset</button></div>
           </div>
           <div className="compiler-options">
             <div className="compiler-option">
@@ -149,13 +157,17 @@ export function Playground() {
             <iframe key={revision} title="Compiled HTML and CSS program" srcDoc={state.program.html} sandbox="" className="preview-frame" hidden={showSource} />
             {showSource ? <SyntaxHighlight source={state.program.html} variant="generated" /> : null}
           </div>
-          <div className="preview-footer"><button onClick={exportHtml}>Export HTML</button></div>
+          <div className="preview-footer"><span>{outputKb} KB html + css</span><button className="tui-button" onClick={exportHtml}>export .html</button></div>
         </section>
       </div>
 
-      <footer className="site-footer">
-        <span>Idea by <a href="https://x.com/shuding" target="_blank" rel="noreferrer">Shu Ding</a>.</span>
-        <a href="https://github.com/shuding/css-lang" target="_blank" rel="noreferrer">GitHub</a>
+      <footer className="statusline">
+        <span className={`mode${state.error ? " mode-error" : ""}`}>{state.error ? "ERR" : "OK"}</span>
+        <span className="status-file">{example === "custom" ? "untitled.zjs" : `${example}.zjs`}</span>
+        <span className="status-cursor">Ln {cursor.line}, Col {cursor.column}</span>
+        <span className="status-spacer" />
+        <span className="status-credit">idea by <a href="https://x.com/shuding" target="_blank" rel="noreferrer">Shu Ding</a></span>
+        <a href="https://github.com/shuding/css-lang" target="_blank" rel="noreferrer">github</a>
       </footer>
     </main>
   );

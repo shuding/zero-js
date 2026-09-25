@@ -6,7 +6,7 @@ export function supportsCssFunctions(): boolean {
   host.style.cssText = "position:fixed;visibility:hidden;pointer-events:none;contain:strict;width:0;height:0";
   const shadow = host.attachShadow({ mode: "closed" });
   const style = document.createElement("style");
-  style.textContent = "@function --css-lang-probe() returns <length> { result: 17px; } span { display:block;width:--css-lang-probe(); }";
+  style.textContent = "@function --zero-js-probe() returns <length> { result: 17px; } span { display:block;width:--zero-js-probe(); }";
   const probe = document.createElement("span");
   shadow.append(style, probe);
   document.body.append(host);

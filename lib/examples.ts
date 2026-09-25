@@ -1,5 +1,56 @@
 export const EXAMPLES = [
   {
+    id: "clock",
+    name: "print(time())",
+    source: `// time() is a CSS animation clock: seconds since the page loaded.
+// Nothing below runs JavaScript. Every digit is recomputed by CSS each frame.
+float t = time(3600);
+print(time());
+
+int minutes = floor(t / 60);
+int seconds = floor(t % 60);
+int centis = floor(t * 100) % 100;
+
+// Seven-segment digit at x. Ghost segments first, then the lit ones.
+int digit(float x, int d) {
+  rect(x + 6, 20, 28, 6, "#172013");
+  rect(x + 34, 26, 6, 30, "#172013");
+  rect(x + 34, 62, 6, 30, "#172013");
+  rect(x + 6, 92, 28, 6, "#172013");
+  rect(x, 62, 6, 30, "#172013");
+  rect(x, 26, 6, 30, "#172013");
+  rect(x + 6, 56, 28, 6, "#172013");
+  if (d != 1 && d != 4) { rect(x + 6, 20, 28, 6, "#9fe870"); }
+  if (d != 5 && d != 6) { rect(x + 34, 26, 6, 30, "#9fe870"); }
+  if (d != 2) { rect(x + 34, 62, 6, 30, "#9fe870"); }
+  if (d != 1 && d != 4 && d != 7) { rect(x + 6, 92, 28, 6, "#9fe870"); }
+  if (d == 0 || d == 2 || d == 6 || d == 8) { rect(x, 62, 6, 30, "#9fe870"); }
+  if (d != 1 && d != 2 && d != 3 && d != 7) { rect(x, 26, 6, 30, "#9fe870"); }
+  if (d > 1 && d != 7) { rect(x + 6, 56, 28, 6, "#9fe870"); }
+  return d;
+}
+
+canvas(320, 118);
+digit(16, minutes / 10);
+digit(64, minutes % 10);
+digit(128, seconds / 10);
+digit(176, seconds % 10);
+digit(240, centis / 10);
+digit(288, centis % 10);
+
+// The colon blinks twice a second.
+if (floor(t * 2) % 2 == 0) {
+  rect(113, 40, 6, 6, "#9fe870");
+  rect(113, 72, 6, 6, "#9fe870");
+}
+rect(226, 88, 5, 6, "#9fe870");
+
+print(minutes);
+print(seconds);
+print(centis);
+`,
+  },
+  {
     id: "addition",
     name: "a + b",
     source: `int a = input("a", 120, 200);
@@ -200,12 +251,12 @@ float x = 160 + cos(radians) * length;
 float y = 120 - sin(radians) * length;
 
 canvas(320, 240);
-rect(12, 12, 296, 216, "#eef1e8");
-line(20, 120, 300, 120, "#cfd6c7");
-line(160, 20, 160, 220, "#cfd6c7");
-line(160, 120, x, y, "#647a55");
+rect(12, 12, 296, 216, "#11150e");
+line(20, 120, 300, 120, "#2a3025");
+line(160, 20, 160, 220, "#2a3025");
+line(160, 120, x, y, "#9fe870");
 circle(160, 120, 4);
-circle(x, y, 8, "#b96746");
+circle(x, y, 8, "#f0b35a");
 `,
   },
   {
@@ -220,9 +271,9 @@ float x = 160 + cos(angle) * radius;
 float y = 120 + sin(angle) * radius;
 
 canvas(320, 240);
-line(160, 120, x, y, "#d8dfd0");
-circle(160, 120, 12, "#c4984b");
-circle(x, y, 7, "#647a55");
+line(160, 120, x, y, "#2a3025");
+circle(160, 120, 12, "#f0b35a");
+circle(x, y, 7, "#9fe870");
 `,
   },
   {
@@ -237,15 +288,15 @@ float bead(float x, float amplitude, float t) {
   float phase = x / 296 * 6.28318530718;
   float y = 120 + sin(phase - t * 6.28318530718 / 6) * amplitude;
   if (y < 120) {
-    circle(x, y, 4, "#647a55");
+    circle(x, y, 4, "#9fe870");
   } else {
-    circle(x, y, 4, "#b96746");
+    circle(x, y, 4, "#f0b35a");
   }
   return y;
 }
 
 canvas(320, 240);
-line(12, 120, 308, 120, "#d8dfd0");
+line(12, 120, 308, 120, "#2a3025");
 float previous_x = 0;
 float previous_y = 0;
 for (int i = 0; i < 24; i++) {
@@ -253,7 +304,7 @@ for (int i = 0; i < 24; i++) {
   float x = 12 + i * 296 / 23;
   float y = bead(x, amplitude, t);
   if (i > 0) {
-    line(previous_x, previous_y, x, y, "#aeb9a3");
+    line(previous_x, previous_y, x, y, "#4b5344");
   }
   previous_x = x;
   previous_y = y;

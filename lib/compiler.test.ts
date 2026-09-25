@@ -151,7 +151,8 @@ function outputs(source: string, inputs: Record<string, number> = {}, options: C
 test("all examples compile to standalone, script-free documents", () => {
   for (const example of EXAMPLES) {
     const program = valid(example.source);
-    assert.ok(program.inputs >= 1);
+    // The clock demo is driven by time() alone.
+    if (example.id !== "clock") assert.ok(program.inputs >= 1);
     assert.ok(program.outputs >= 1);
     assert.ok(program.html.startsWith("<!doctype html>"));
     assert.doesNotMatch(program.html, /<script\b|\son\w+=/i);
@@ -468,8 +469,16 @@ test("bounded loops carry assignments, isolate locals, skip empty ranges, and pr
 });
 
 test("demo outputs cover defaults, boundaries, and changing inputs", () => {
-  assert.deepEqual(EXAMPLES.map(example => example.id), ["addition", "rsa", "gcd", "fibonacci", "prime", "fizzbuzz", "sorting", "temperature", "geometry", "orbit", "wave", "collatz"]);
-  assert.deepEqual(outputs(EXAMPLES[0].source), [200]);
+  const clock = EXAMPLES.find(example => example.id === "clock")!.source;
+  // time() loops every 60s; the 3600s clock keeps counting into minutes.
+  const [loop, ...digits] = outputs(clock, {}, {}, 65.37);
+  assert.ok(Math.abs(Number(loop) - 5.37) < 0.01, String(loop));
+  assert.deepEqual(digits, [1, 5, 37]);
+  // 01:05.37 lights 6+2+6+5+5+3 segments, plus the colon and decimal point.
+  const lit = evaluateProgram(clock, {}, {}, 65.37).drawings.filter(shape => shape.color === "#9fe870");
+  assert.equal(lit.length, 30);
+  assert.deepEqual(EXAMPLES.map(example => example.id), ["clock", "addition", "rsa", "gcd", "fibonacci", "prime", "fizzbuzz", "sorting", "temperature", "geometry", "orbit", "wave", "collatz"]);
+  assert.deepEqual(outputs(EXAMPLES.find(example => example.id === "addition")!.source), [200]);
   for (const [n, expected] of [[0, 0], [1, 1], [5, 5], [10, 55]]) {
     assert.deepEqual(outputs(EXAMPLES.find(example => example.id === "fibonacci")!.source, { n }), [expected]);
   }

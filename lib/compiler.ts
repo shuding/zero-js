@@ -1125,11 +1125,11 @@ class Lowerer {
       case "draw": {
         const count = DRAWING_ARITY.get(statement.shape)!;
         const color = statement.args[count];
-        if (color && (color.kind !== "string" || !/^#(?:[\da-f]{3}|[\da-f]{4}|[\da-f]{6}|[\da-f]{8})$/i.test(color.value))) throw new CompileError('Use a literal hex color, such as "#647a55".', color.token.offset);
+        if (color && (color.kind !== "string" || !/^#(?:[\da-f]{3}|[\da-f]{4}|[\da-f]{6}|[\da-f]{8})$/i.test(color.value))) throw new CompileError('Use a literal hex color, such as "#9fe870".', color.token.offset);
         const values = statement.args.slice(0, count).map(arg => this.add(statement.shape, this.value(arg, context), arg.token, "float"));
         const visible = this.add("draw active", booleanWidth(truthy(this.outputActive(context))), statement.token);
         const drawing = this.drawings.length;
-        this.drawings.push({ kind: statement.shape, values, visible, color: color?.kind === "string" ? color.value : "#33372f" });
+        this.drawings.push({ kind: statement.shape, values, visible, color: color?.kind === "string" ? color.value : "#d7ddcc" });
         // Emit at this state snapshot, before a later iteration reuses its slots.
         this.flush();
         this.sequence.execution.push({ kind: "draw", drawing });

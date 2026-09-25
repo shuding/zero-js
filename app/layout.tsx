@@ -5,8 +5,8 @@ import "./globals.css";
 const geistMono = Geist_Mono({ subsets: ["latin"], variable: "--font-geist-mono", display: "swap" });
 
 export const metadata: Metadata = {
-  title: "css-lang — a C-like language compiled to CSS",
-  description: "A C-like language that compiles to standalone HTML and CSS, with calculations, drawing, and animation powered by CSS.",
+  title: "zero-js — a C-like language that compiles to zero-JavaScript HTML and CSS",
+  description: "A C-like language that compiles to plain HTML and CSS. Calculations, drawing, input and animation run with zero bytes of JavaScript.",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

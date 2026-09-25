@@ -1,6 +1,6 @@
-# css-lang
+# zero-js
 
-A C-like language that compiles to standalone HTML and CSS, with no JavaScript. Variables, functions, loops, tail recursion, arrays, strings, drawing, and animation all run as CSS calculations that update live as the inputs change.
+A C-like language that compiles to standalone HTML and CSS, with zero bytes of JavaScript. Variables, functions, loops, tail recursion, arrays, strings, drawing, and animation all run as CSS calculations that update live as the inputs change.
 
 ## Getting started
 
@@ -25,7 +25,7 @@ int b = input("b", 30, 200);
 print(gcd(a, b));
 ```
 
-The playground comes with twelve demos: a + b, RSA, GCD, Fibonacci, Nth prime, FizzBuzz, bubble sort, temperature conversion, geometry, orbit, wave, and 3n+1.
+The playground comes with thirteen demos: a live `print(time())` clock, a + b, RSA, GCD, Fibonacci, Nth prime, FizzBuzz, bubble sort, temperature conversion, geometry, orbit, wave, and 3n+1.
 
 ## Language
 

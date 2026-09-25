@@ -407,9 +407,10 @@ export function renderDocument(program: Runtime): string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'none'; base-uri 'none'; form-action 'none'">
-<title>css-lang output</title>
+<title>zero-js output</title>
 <style>
-:root { color-scheme: light; font: 14px Menlo, Monaco, Consolas, monospace; color: #292b27; background: #fafbf7; }
+:root { color-scheme: dark; font: 14px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; color: #d7ddcc; background: #0d0f0b; }
+::selection { background: #9fe87044; }
 @property --program-width { syntax: "<length>"; inherits: true; initial-value: 0px; }
 ${prints.some(printed => printed.visible !== undefined) ? '@property --print-visible { syntax: "<length>"; inherits: true; initial-value: 0px; }' : ""}
 @property --result { syntax: "<length>"; inherits: true; initial-value: 0px; }
@@ -426,52 +427,52 @@ ${pageInputs.length ? `.page-controls { position: fixed; inset: 0; z-index: 2; o
 .page-input { position: sticky; left: 0; top: 0; display: block; width: 100vw; height: 100dvh; margin: 0; padding: 0; border: 0; appearance: none; }
 .program { z-index: 3; pointer-events: none; }
 .input, .control, .input-label, .motion-control { pointer-events: auto; }
-body:has(#page-input:focus-visible) .scene-frame { outline: 2px solid #68785c; outline-offset: 3px; }` : ""}
+body:has(#page-input:focus-visible) .scene-frame { outline: 2px solid #9fe870; outline-offset: 3px; }` : ""}
 .input-bridge { position: absolute; left: 0; top: 0; container-type: inline-size; }
 .output-space { position: absolute; left: 0; top: ${top}px; width: var(--program-width); overflow-x: auto; }
 .output-content { position: relative; min-width: ${program.drawings.length ? program.canvas.width + 2 : 0}px; padding-bottom: 16px; }
 .execution { padding-top: 48px; }
 .input-reader::before, .input-reader::after { content: ""; position: absolute; left: 24px; top: -1px; height: 2px; border-radius: 2px; }
-.input-reader::before { width: var(--track-width); background: #dfe2d9; }
-.input-reader::after { width: max(0px, calc(100% - 32px)); background: #33372f; }
+.input-reader::before { width: var(--track-width); background: #2a3025; }
+.input-reader::after { width: max(0px, calc(100% - 32px)); background: #9fe870; }
 .input { position: absolute; left: calc(var(--slider-left) - 24px); height: 24px; min-width: 32px; padding: 0; border: 0; margin: 0; font: inherit; resize: horizontal; overflow: auto; opacity: 0; cursor: ew-resize; }
-.input:focus-visible + .input-reader .slider-value { outline: 2px solid #68785c; outline-offset: 3px; }
+.input:focus-visible + .input-reader .slider-value { outline: 2px solid #9fe870; outline-offset: 3px; }
 ${inputs.some(node => node.input!.kind !== "slider") ? `.control { position: absolute; left: var(--slider-left); margin: 0; font: inherit; color: inherit; }
-.control:focus-visible { outline: 2px solid #68785c; outline-offset: 3px; }
-.control-help { position: absolute; left: var(--slider-left); font-size: 11px; line-height: 18px; color: #737b6c; }
-.toggle-input { width: 28px; height: 24px; accent-color: #647a55; cursor: pointer; }
-.press-input, .typed-input { height: 28px; padding: 3px 10px; background: #fafbf7; border: 1px solid #c4cbbc; border-radius: 4px; }
+.control:focus-visible { outline: 2px solid #9fe870; outline-offset: 3px; }
+.control-help { position: absolute; left: var(--slider-left); font-size: 11px; line-height: 18px; color: #7d8773; }
+.toggle-input { width: 28px; height: 24px; accent-color: #9fe870; cursor: pointer; }
+.press-input, .typed-input { height: 28px; padding: 3px 10px; background: #0d0f0b; border: 1px solid #3d4636; border-radius: 2px; }
 .press-input { cursor: pointer; }
-.press-input:active { background: #e5eadf; border-color: #68785c; }
+.press-input:active { background: #9fe870; color: #0d0f0b; border-color: #9fe870; }
 .typed-input { width: 52px; }
-.typed-input:valid { border-color: #68785c; background: #eef1e8; }
-.scroll-input { width: min(200px, calc(var(--program-width) - var(--slider-left))); height: 80px; padding: 0; border: 1px solid #c4cbbc; border-radius: 4px; background: transparent; overscroll-behavior: contain; }
-.scroll-world { display: block; background: repeating-linear-gradient(0deg, transparent 0 19px, #e1e4dc 19px 20px), repeating-linear-gradient(90deg, transparent 0 19px, #e1e4dc 19px 20px); }` : ""}
+.typed-input:valid { border-color: #9fe870; background: #1a2416; }
+.scroll-input { width: min(200px, calc(var(--program-width) - var(--slider-left))); height: 80px; padding: 0; border: 1px solid #3d4636; border-radius: 2px; background: transparent; overscroll-behavior: contain; }
+.scroll-world { display: block; background: repeating-linear-gradient(0deg, transparent 0 19px, #1f241b 19px 20px), repeating-linear-gradient(90deg, transparent 0 19px, #1f241b 19px 20px); }` : ""}
 .reader { position: absolute; left: 0; padding: 0; border: 0; margin: 0; height: 24px; container-type: inline-size; pointer-events: none; }
 .number { position: absolute; left: 0; width: max-content; font-variant-numeric: tabular-nums; }
 /* Output reads stored values directly, without a round-trip through cqw. */
 .number::after { counter-reset: value calc(var(--result) / 1px); content: counter(value); }
 .number.decimal::after { --scaled: round(nearest, calc(abs(var(--result)) / 1px * 1000), 1); counter-reset: negative calc(max(0, -1 * sign(var(--result))) * sign(var(--scaled))) whole round(down, calc(var(--scaled) / 1000), 1) fraction mod(var(--scaled), 1000); content: counter(negative, decimal-sign) counter(whole) "." counter(fraction, decimal-three); }
 .input-reader { left: calc(var(--slider-left) - 24px); }
-.slider-value { left: calc(100% - 8px); top: 0; z-index: 1; min-width: 28px; padding: 3px 7px; border-radius: 4px; background: #242622; color: #fafbf7; transform: translate(-50%, -50%); font-size: 12px; line-height: 18px; text-align: center; }
-.section-heading { position: absolute; left: 0; right: 0; border-top: 1px solid #e1e4dc; padding-top: 12px; font-size: 12px; color: #737b6c; }
+.slider-value { left: calc(100% - 8px); top: 0; z-index: 1; min-width: 28px; padding: 3px 7px; border-radius: 2px; background: #9fe870; color: #0d0f0b; transform: translate(-50%, -50%); font-size: 12px; line-height: 18px; text-align: center; }
+.section-heading { position: absolute; left: 0; right: 0; border-top: 1px dashed #2a3025; padding-top: 12px; font-size: 11px; letter-spacing: .08em; text-transform: lowercase; color: #7d8773; }
 .print-event { container-name: print-event; }
 .print-row { display: grid; grid-template-columns: 60% 40%; min-height: 44px; width: var(--program-width); }
 ${prints.some(printed => printed.visible !== undefined) ? '.print-row.conditional { display: none; }\n@container print-event style(--print-visible: 1px) { .print-row.conditional { display: grid; } }' : ""}
-.print::before { content: attr(data-label); grid-column: 1; grid-row: 1; min-width: 0; padding-top: 3px; padding-right: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.print::before { content: attr(data-label); grid-column: 1; grid-row: 1; min-width: 0; padding-top: 3px; padding-right: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: #7d8773; }
 .print { position: relative; min-width: 0; container-name: printed; }
-.print .number, .print .text { position: static; grid-column: 2; grid-row: 1; font-size: 22px; }
+.print .number, .print .text { position: static; grid-column: 2; grid-row: 1; font-size: 22px; color: #eef3e4; }
 .print .text { white-space: pre; }
-${prints.some(printed => printed.error) ? '.runtime-error { grid-template-columns: 1fr; gap: 6px; padding: 10px 0; color: #99462f; }\n.runtime-error .text { grid-column: 1; grid-row: 2; white-space: normal; overflow-wrap: anywhere; font-size: 13px; line-height: 1.5; }' : ""}
+${prints.some(printed => printed.error) ? '.runtime-error { grid-template-columns: 1fr; gap: 6px; padding: 10px 0; color: #ff7a66; }\n.runtime-error .text { grid-column: 1; grid-row: 2; white-space: normal; overflow-wrap: anywhere; font-size: 13px; line-height: 1.5; }' : ""}
 .choice { display: none; }
-.scene-frame { anchor-name: --scene; position: relative; box-sizing: content-box; border: 1px solid #e1e4dc; border-radius: 4px; background: #fff; }
+.scene-frame { anchor-name: --scene; position: relative; box-sizing: content-box; border: 1px solid #2a3025; border-radius: 2px; background: #070806; }
 .drawing-layer { position: absolute; position-anchor: --scene; left: calc(anchor(left) + 1px); top: calc(anchor(top) + 1px); z-index: 1; width: ${program.canvas.width}px; height: ${program.canvas.height}px; overflow: hidden; border-radius: 3px; pointer-events: none; }
 .drawing-layer::after { content: ""; position: absolute; }
-.motion-control { position: absolute; right: 0; top: 13px; z-index: 1; display: flex; align-items: center; gap: 6px; font-size: 12px; color: #737b6c; }
-.motion-control input { accent-color: #33372f; margin: 0; }
+.motion-control { position: absolute; right: 0; top: 13px; z-index: 1; display: flex; align-items: center; gap: 6px; font-size: 12px; color: #7d8773; }
+.motion-control input { accent-color: #9fe870; margin: 0; }
 .program:has(#pause-motion:checked) { --clock-play: paused; }
 @media (prefers-reduced-motion: reduce) { .program { --clock-play: paused; } }
-.empty { position: absolute; margin: 0; color: #737b6c; font-size: 12px; }
+.empty { position: absolute; margin: 0; color: #7d8773; font-size: 12px; }
 .unsupported, .scroll-unsupported { display: none; font-size: 12px; }
 @supports not ((width: anchor-size(--test width)) and (counter-reset: value calc(1px / 1px)) and (width: round(down, 1px, 1px)) and (width: abs(-1px)) and (width: calc(sign(1px) * 1px))) {
   .unsupported { display: block; }
