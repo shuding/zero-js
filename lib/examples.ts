@@ -1,5 +1,15 @@
 export const EXAMPLES = [
   {
+    id: "addition",
+    name: "a + b",
+    source: `int a = input("a", 120, 200);
+int b = input("b", 80, 200);
+
+int sum = a + b;
+print(sum);
+`,
+  },
+  {
     id: "clock",
     name: "print(time())",
     source: `// time() is a CSS animation clock: seconds since the page loaded.
@@ -30,7 +40,7 @@ int digit(float x, int d) {
   return d;
 }
 
-canvas(320, 118);
+canvas(350, 118);
 digit(16, minutes / 10);
 digit(64, minutes % 10);
 digit(128, seconds / 10);
@@ -48,16 +58,6 @@ rect(226, 88, 5, 6, "#9fe870");
 print(minutes);
 print(seconds);
 print(centis);
-`,
-  },
-  {
-    id: "addition",
-    name: "a + b",
-    source: `int a = input("a", 120, 200);
-int b = input("b", 80, 200);
-
-int sum = a + b;
-print(sum);
 `,
   },
   {
