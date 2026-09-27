@@ -167,7 +167,7 @@ export function Playground() {
         <span className="status-cursor">Ln {cursor.line}, Col {cursor.column}</span>
         <span className="status-spacer" />
         <span className="status-credit">idea by <a href="https://x.com/shuding" target="_blank" rel="noreferrer">Shu Ding</a></span>
-        <a href="https://github.com/shuding/css-lang" target="_blank" rel="noreferrer">github</a>
+        <a href="https://github.com/shuding/zero-js" target="_blank" rel="noreferrer">github</a>
       </footer>
     </main>
   );
